@@ -1,11 +1,15 @@
+const path          = require('path');
 const bb            = require('bluebird');
 const chokidar      = require('chokidar');
+const rp            = require('request-promise');
 const each 					= require('lodash/each');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
+const nconf         = require('nconf');
 
 const pending       = [];
-const watchDir      = '/home/markhorsman/jdj-certificates/';
+const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
+const watchDir      = cnf.get('watchdir') || '/home/markhorsman/jdj-certificates/';
 
 getInsts()
   .then(run)
@@ -63,8 +67,9 @@ function initWatcher() {
           watcher.unwatch(path);
 
           genStockItemFromPDF(path)
-            .then(stockItem => {
-              console.log(stockItem);
+            .then(findStockItem)
+            .then(result => {
+              console.log(result);
             })
             .catch(console.log)
             .finally(() => pending.splice(pending.indexOf(path), 1))
@@ -75,6 +80,18 @@ function initWatcher() {
   return watcher;
 }
 
+function findStockItem(stockItem)
+{
+  return rp(
+    {
+      uri: cnf.get('api:uri') + '/stock/find/' + stockItem.itemno,
+      headers: {
+        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
+      }
+    }
+  ).then(resp => ({ resp, stockItem }));
+}
+
 function genStockItemFromPDF(path) {
   return new bb((resolve, reject) => {
     pdfText(path, function(err, chunks) {
@@ -83,7 +100,7 @@ function genStockItemFromPDF(path) {
 
       const stockItem = {};
 
-      return extractArticleNumber(chunks)
+      return extractArticleNumber(chunks, path)
         .then(articleNumber => {
           stockItem.itemno  = articleNumber;
           stockItem.serno   = extractSerialNumber(chunks);
@@ -96,7 +113,7 @@ function genStockItemFromPDF(path) {
   });
 }
 
-function extractArticleNumber(chunks)
+function extractArticleNumber(chunks, path)
 {
   return new bb((resolve, reject) => {
     const multipleErr = new Error('Multiple certificates found in one file.');
@@ -134,7 +151,7 @@ function extractArticleNumber(chunks)
         return resolve(chunks[distinguishingNumberIndex + 1]);
     }
 
-    return resolve(null);
+    return reject('No articleNumber found in file ' + path);
   });
 }
 
