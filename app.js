@@ -1,59 +1,141 @@
+const bb            = require('bluebird');
+const chokidar      = require('chokidar');
 const each 					= require('lodash/each');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 
-const file          = process.env.FILE;
+const pending       = [];
+const watchDir      = '/home/markhorsman/jdj-certificates/';
 
-try {
-  pdfText(file, function(err, chunks) {
-    if (!chunks) throw new Error('Could not read contents of file: ' + file);
+getInsts()
+  .then(run)
+  .catch(e => { console.log(e); process.exit(); })
+;
 
-    const articleNumber = extractArticleNumber(chunks);
-    const serialNumber  = extractSerialNumber(chunks);
-    const date          = extractDate(chunks);
+/**
+ * resolves to a collection of require [resource] instances
+ *
+ * @return {Promise}
+ */
+function getInsts()
+{
+    console.log('initializing resources ... ');
 
-    console.log('artikelnummer: %s', articleNumber);
-    console.log('datum: %s', date);
-    console.log('serienummer: %s', serialNumber);
+    return bb.props({
+        watcher: initWatcher()
+    });
+}
+
+function run() {
+  console.log('JDJ Certificate Worker running...');
+}
+
+function initWatcher() {
+  const watcher = chokidar.watch(watchDir + '.', {
+      persistent: true,
+      ignored: function (path, stat) {
+          if (!stat) return false;
+
+          if (path[path.length - 1] === '/')  // don't ignore dirs
+              return true;
+
+          return /.*[^.pdf]$/.test(path);
+      },
+      ignoreInitial: true,
+      followSymlinks: false,
+      alwaysStat: false,
+      depth: 0,
+      ignorePermissionErrors: false,
+      atomic: true,
+      awaitWriteFinish: {
+          stabilityThreshold: 2000,
+          pollInterval: 100
+      }
   });
-} catch (e) {
-  console.log(e.message);
+
+  watcher.on('error', (e) => {
+      console.log('Watcher Error: ' + e.message); // what to do?
+  });
+
+  watcher.on('ready', () => {
+      watcher.on('add', (path) => {
+          pending.push(path);
+          watcher.unwatch(path);
+
+          genStockItemFromPDF(path)
+            .then(stockItem => {
+              console.log(stockItem);
+            })
+            .catch(console.log)
+            .finally(() => pending.splice(pending.indexOf(path), 1))
+          ;
+      });
+  });
+
+  return watcher;
+}
+
+function genStockItemFromPDF(path) {
+  return new bb((resolve, reject) => {
+    pdfText(path, function(err, chunks) {
+      if (!chunks)
+        return reject(new Error('Could not read contents of file: ' + file));
+
+      const stockItem = {};
+
+      return extractArticleNumber(chunks)
+        .then(articleNumber => {
+          stockItem.itemno  = articleNumber;
+          stockItem.serno   = extractSerialNumber(chunks);
+          stockItem.lastser = extractDate(chunks);
+
+          resolve(stockItem)
+      })
+      .catch(e => reject(e));
+    });
+  });
 }
 
 function extractArticleNumber(chunks)
 {
+  return new bb((resolve, reject) => {
+    const multipleErr = new Error('Multiple certificates found in one file.');
 
-  // are there more pages with an article number?
-  const fileHasMultipleMatches = (str, index) => {
-    if (chunks.indexOf(str, index) > -1)
-        throw new Error('Multiple certificates found in one file.');
+    // are there more pages with an article number?
+    const fileHasMultipleMatches = (str, index) => {
+      if (chunks.indexOf(str, index) > -1)
+          return true;
 
-    return false;
-  }
+      return false;
+    }
 
-  const identificationNumberIndex = chunks.indexOf('Identification number');
-  const artikelnummerIndex        = chunks.indexOf('Artikelnummer:');
-  const distinguishingNumberIndex = chunks.indexOf('(Distinguishing nr)');
+    const identificationNumberIndex = chunks.indexOf('Identification number');
+    const artikelnummerIndex        = chunks.indexOf('Artikelnummer:');
+    const distinguishingNumberIndex = chunks.indexOf('(Distinguishing nr)');
 
-  if (identificationNumberIndex > -1) {
-    fileHasMultipleMatches('Identification number', identificationNumberIndex + 3);
+    if (identificationNumberIndex > -1) {
+      if (fileHasMultipleMatches('Identification number', identificationNumberIndex + 3))
+        return reject(multipleErr);
 
-    return chunks[identificationNumberIndex + 2];
-  }
+      return resolve(chunks[identificationNumberIndex + 2]);
+    }
 
-  if (artikelnummerIndex > -1) {
-    fileHasMultipleMatches('Artikelnummer:', artikelnummerIndex + 2);
+    if (artikelnummerIndex > -1) {
+      if (fileHasMultipleMatches('Artikelnummer:', artikelnummerIndex + 2))
+        return reject(multipleErr);
 
-    return chunks[artikelnummerIndex + 1];
-  }
+      return resolve(chunks[artikelnummerIndex + 1]);
+    }
 
-  if (distinguishingNumberIndex > -1) {
-      fileHasMultipleMatches('(Distinguishing nr)', distinguishingNumberIndex + 2);
+    if (distinguishingNumberIndex > -1) {
+        if (fileHasMultipleMatches('(Distinguishing nr)', distinguishingNumberIndex + 2))
+          return reject(multipleErr);
 
-      return chunks[distinguishingNumberIndex + 1];
-  }
+        return resolve(chunks[distinguishingNumberIndex + 1]);
+    }
 
-  return null;
+    return resolve(null);
+  });
 }
 
 function extractDate(chunks) {
