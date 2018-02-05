@@ -1,4 +1,5 @@
 const path          = require('path');
+const fs            = require('fs');
 const bb            = require('bluebird');
 const chokidar      = require('chokidar');
 const rp            = require('request-promise');
@@ -64,14 +65,19 @@ function initWatcher() {
   watcher.on('ready', () => {
       watcher.on('add', (path) => {
           pending.push(path);
-          watcher.unwatch(path);
 
           genStockItemFromPDF(path)
             .then(findStockItem)
             .then(result => {
+              watcher.unwatch(path);
+
               console.log(result);
             })
-            .catch(console.log)
+            .catch(e => {
+              console.log(e);
+              fs.unlinkSync(path);
+
+            })
             .finally(() => pending.splice(pending.indexOf(path), 1))
           ;
       });
@@ -87,9 +93,10 @@ function findStockItem(stockItem)
       uri: cnf.get('api:uri') + '/stock/find/' + stockItem.itemno,
       headers: {
         'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      }
+      },
+      json: true
     }
-  ).then(resp => ({ resp, stockItem }));
+  ).then(resp => ({ stockItem: resp.body, pdfData: stockItem }));
 }
 
 function genStockItemFromPDF(path) {
