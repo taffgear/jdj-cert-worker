@@ -1,6 +1,7 @@
 const path          = require('path');
 const fs            = require('fs');
 const bb            = require('bluebird');
+const Redis         = require('ioredis');
 const chokidar      = require('chokidar');
 const rp            = require('request-promise');
 const each 					= require('lodash/each');
@@ -29,7 +30,10 @@ function getInsts()
     console.log('initializing resources ... ');
 
     return bb.props({
-        watcher: initWatcher()
+        redis   : new Redis()
+    }).tap(insts => {
+        insts.watcher = initWatcher(insts);
+        return insts;
     });
 }
 
@@ -37,7 +41,11 @@ function run() {
   console.log('JDJ Certificate Worker running...');
 }
 
-function initWatcher() {
+function buildRedisKey(category) {
+  return "jdj:logs:" + category + ":" + moment().unix();
+}
+
+function initWatcher(insts) {
   const watcher = chokidar.watch(watchDir + '.', {
       persistent: true,
       ignored: function (path, stat) {
@@ -86,9 +94,11 @@ function initWatcher() {
             .then(result => {
               watcher.unwatch(path);
 
+              insts.redis.set(buildRedisKey("success"), "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.stockItem.itemno);
               console.log(result);
             })
             .catch(e => {
+              insts.redis.set(buildRedisKey("failed"), e.message);
               console.log(e);
               fs.unlinkSync(path);
 
