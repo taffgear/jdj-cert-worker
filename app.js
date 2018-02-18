@@ -94,11 +94,13 @@ function initWatcher(insts) {
             .then(result => {
               watcher.unwatch(path);
 
-              insts.redis.set(buildRedisKey("success"), "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.stockItem.itemno);
+              const logMsg = JSON.stringify({ msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.pdfData.itemno, ts: moment().unix()});
+
+              insts.redis.set(buildRedisKey("success"), logMsg);
               console.log(result);
             })
             .catch(e => {
-              insts.redis.set(buildRedisKey("failed"), e.message);
+              insts.redis.set(buildRedisKey("failed"), JSON.stringify({ msg: e.message, ts: moment().unix() }));
               console.log(e);
               fs.unlinkSync(path);
 
