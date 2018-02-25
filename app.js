@@ -9,7 +9,7 @@ const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
 const fsPath        = require('fs-path');
-
+const csv           = require('csvtojson');
 
 const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
@@ -32,7 +32,8 @@ function getInsts()
     return bb.props({
         redis   : new Redis()
     }).tap(insts => {
-        insts.watcher = initWatcher(insts);
+        insts.pdfWatcher  = initPDFWatcher(insts);
+        insts.csvWacher   = initCSVWatcher(insts);
         return insts;
     });
 }
@@ -45,7 +46,7 @@ function buildRedisKey(category) {
   return "jdj:logs:" + category + ":" + moment().unix();
 }
 
-function initWatcher(insts) {
+function initPDFWatcher(insts) {
   const watcher = chokidar.watch(watchDir + '.', {
       persistent: true,
       ignored: function (path, stat) {
@@ -111,6 +112,62 @@ function initWatcher(insts) {
   });
 
   return watcher;
+}
+
+function initCSVWatcher(insts) {
+  const watcher = chokidar.watch(watchDir + '.', {
+      persistent: true,
+      ignored: function (path, stat) {
+          if (!stat) return false;
+
+          if (path[path.length - 1] === '/')  // don't ignore dirs
+              return true;
+
+          return /.*[^.csv]$/.test(path);
+      },
+      ignoreInitial: true,
+      followSymlinks: false,
+      alwaysStat: false,
+      depth: 0,
+      ignorePermissionErrors: false,
+      atomic: true,
+      awaitWriteFinish: {
+          stabilityThreshold: 2000,
+          pollInterval: 100
+      }
+  });
+
+  watcher.on('error', (e) => {
+      console.log('Watcher Error: ' + e.message); // what to do?
+  });
+
+  watcher.on('ready', () => {
+      watcher.on('add', (path) => {
+          pending.push(path);
+
+          getJSONFromCSV(path).then(data => {
+            console.log(data);
+          });
+      });
+  });
+
+  return watcher;
+}
+
+function getJSONFromCSV(path)
+{
+  return new bb((resolve, reject) => {
+    const data = [];
+
+    csv()
+    .fromFile(path)
+    .on('json',(jsonObj)=>{
+        data.push(jsonObj);
+    })
+    .on('done',(error)=>{
+        resolve(data);
+    });
+  });
 }
 
 function copyPDFToFolder(obj)
