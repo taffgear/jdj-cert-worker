@@ -12,10 +12,14 @@ const moment        = require('moment');
 const nconf         = require('nconf');
 const fsPath        = require('fs-path');
 const csv           = require('csvtojson');
+const wkhtmltopdf   = require('wkhtmltopdf');
+
+// TODO: run sudo apt-get install xvfb libfontconfig wkhtmltopdf on server!!!
 
 const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
 const watchDir      = cnf.get('watchdir') || '/home/markhorsman/jdj-certificates/';
+const genHTML       = require('./lib/genPDFHTMLString');
 
 getInsts()
   .then(run)
@@ -91,9 +95,21 @@ function initPDFWatcher(insts) {
                 return obj.stockItem;
             })
             .then(findStockItem)
-            .then(updateStockItem)
+            .then(obj => {
+              const body = genUpdateStockItemBody(obj.pdfData.lastser, obj.pdfData.serno, obj.stockItem.STATUS, obj.pdfData.itemno);
+
+              return updateStockItem(body)
+                .then(resp => ({ stockItem: obj.stockItem, pdfData: obj.pdfData, resp }))
+              ;
+            })
             .then(copyPDFToFolder)
-            .then(createContdoc)
+            .then(obj => {
+              const body = genCreateContDocBody(obj.pdfData.itemno, obj.pdfData.filename, obj.pdfData.lastser);
+
+              return createContdoc(body)
+                .then(resp => ({ stockItem: obj.stockItem, pdfData: obj.pdfData, resp }))
+              ;
+            })
             .then(result => {
               watcher.unwatch(path);
 
@@ -153,9 +169,32 @@ function initCSVWatcher(insts) {
             return findStockItems(data.map(o => o.articleNumber))
               .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
               .then(mapped => {
-                  console.log(mapped);
-              })
+                  return bb.map(mapped, (obj) => {
+                      const serno = (obj.PATSerialnumber.length ? obj.PATSerialnumber : obj['SERNO'])
+                      const body = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
 
+                      return updateStockItem(body)
+                        .then(resp => genPDF(obj))
+                        .then(filePath => {
+                          const contDocBody = genCreateContDocBody(obj.ITEMNO, filePath, obj.testDate);
+
+                          return createContdoc(contDocBody).then(resp => filePath);
+                        })
+                        .then(filePath => {
+                          const logMsg = JSON.stringify({ msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().unix()});
+
+                          return insts.redis.set(buildRedisKey("success"), logMsg);
+                        })
+                        .catch(e => {
+                          console.log(e);
+                          return insts.redis.set(buildRedisKey("failed"), JSON.stringify({ msg: e.message, ts: moment().unix() }));
+                        })
+                      ;
+                  }, { concurrency : 1 }).then(results => {
+                      console.log(results);
+                      watcher.unwatch(path);
+                  });
+              })
           });
       });
   });
@@ -163,7 +202,50 @@ function initCSVWatcher(insts) {
   return watcher;
 }
 
+function genPDF(obj)
+{
+  return new bb((resolve, reject) => {
+    const filePath  = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
+    const fileName  = filePath + '/' + obj.ITEMNO + '.pdf';
+    const html      = genHTML(obj);
 
+    fsPath.mkdir(filePath, err => {
+      if (err) return reject(err);
+
+      wkhtmltopdf(html, { output: fileName }, (err) => resolve(fileName));
+    });
+  });
+}
+
+function genUpdateStockItemBody(lastser, serno, status, itemno)
+{
+  return {
+    lastser: lastser,
+    period: 365,
+    serno: serno,
+    status: (parseInt(status) === 11 ? 0 : status),
+    pattest: 1,
+    patlastser: lastser,
+    patperiod: 365,
+    patpertype: 1,
+    itemno: itemno
+  };
+}
+
+function genCreateContDocBody(itemno, filePath, lastser)
+{
+  return {
+    type: 'ST',
+    key: itemno,
+    filename: filePath,
+    optflag: 0,
+    options: 0,
+    sid: lastser,
+    scantopdftype: 0,
+    name: 'Certificaat ' + moment(lastser).format('YYYY'),
+    showinweb: 0
+  };
+}
 
 function mapCSVObjectsToStockItems(objects, stockItems)
 {
@@ -179,7 +261,7 @@ function mapCSVObjectsToStockItems(objects, stockItems)
 
     if (lastser.isValid() && moment(lastser.format('YYYY-MM-DD')).isSameOrAfter(moment(testDate).format('YYYY-MM-DD')))
       return acc;
-      
+
     acc.push(Object.assign(obj, stockItem));
 
     return acc;
@@ -283,7 +365,7 @@ function findContdocItem(stockItem)
   ).then(resp => ({ resp, stockItem }));
 }
 
-function updateStockItem(obj)
+function updateStockItem(body)
 {
   return rp(
     {
@@ -292,23 +374,13 @@ function updateStockItem(obj)
       headers: {
         'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
       },
-      body: {
-        lastser: obj.pdfData.lastser,
-        period: 365,
-        serno: obj.pdfData.serno,
-        status: (parseInt(obj.stockItem.STATUS) === 11 ? 0 : obj.stockItem.STATUS),
-        pattest: 1,
-        patperiod: 365,
-        patlastser: obj.pdfData.lastser,
-        patpertype: 1,
-        itemno: obj.pdfData.itemno
-      },
+      body,
       json: true
     }
-  ).then(resp => ({ stockItem: obj.stockItem, pdfData: obj.pdfData, resp }));
+  );
 }
 
-function createContdoc(obj)
+function createContdoc(body)
 {
   return rp(
     {
@@ -317,20 +389,10 @@ function createContdoc(obj)
       headers: {
         'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
       },
-      body: {
-        type: 'ST',
-        key: obj.pdfData.itemno,
-        filename: obj.pdfData.filename,
-        optflag: 0,
-        options: 0,
-        sid: obj.pdfData.lastser,
-        scantopdftype: 0,
-        name: 'Certificaat ' + moment().format('YYYY'),
-        showinweb: 0
-      },
+      body,
       json: true
     }
-  ).then(resp => ({ stockItem: obj.stockItem, pdfData: obj.pdfData, resp }));
+  );
 }
 
 function genStockItemFromPDF(path) {
