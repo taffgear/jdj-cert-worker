@@ -5,6 +5,8 @@ const Redis         = require('ioredis');
 const chokidar      = require('chokidar');
 const rp            = require('request-promise');
 const each 					= require('lodash/each');
+const reduce        = require('lodash/reduce');
+const find          = require('lodash/find');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -145,13 +147,65 @@ function initCSVWatcher(insts) {
       watcher.on('add', (path) => {
           pending.push(path);
 
-          getJSONFromCSV(path).then(data => {
-            console.log(data);
+          getJSONFromCSV(path)
+          .then(prepCSVObjects)
+          .then(data => {
+            return findStockItems(data.map(o => o.articleNumber))
+              .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
+              .then(mapped => {
+                  console.log(mapped);
+              })
+
           });
       });
   });
 
   return watcher;
+}
+
+
+
+function mapCSVObjectsToStockItems(objects, stockItems)
+{
+  if (!stockItems || !stockItems.length) return [];
+
+  return reduce(objects, (acc, obj) => {
+    const stockItem = find(stockItems, { 'ITEMNO' : obj.articleNumber });
+
+    if (!stockItem) return acc;
+
+    const testDate = moment(obj.testDate);
+    const lastser = moment(stockItem['LASTSER#1']);
+
+    if (lastser.isValid() && moment(lastser.format('YYYY-MM-DD')).isSameOrAfter(moment(testDate).format('YYYY-MM-DD')))
+      return acc;
+      
+    acc.push(Object.assign(obj, stockItem));
+
+    return acc;
+  }, []);
+}
+
+function prepCSVObjects(data)
+{
+  return reduce(data, (acc, obj) => {
+    if (!obj.articleNumber || !obj.articleNumber.length)
+      return acc;
+
+    if (!obj.testDate || !obj.testDate.length)
+      return acc;
+
+    const m = moment(obj.testDate);
+
+    if (!m.isValid()) return acc;
+
+    const t = (obj.testTime && obj.testTime.length ? moment(obj.testTime, ['h:m:a', 'H:m']) : moment());
+
+    obj.testDate = m.format('YYYY-MM-DD') + ' ' + t.format('HH:mm:ss.SSS')
+
+    acc.push(obj);
+    return acc;
+  }, []);
 }
 
 function getJSONFromCSV(path)
@@ -200,6 +254,20 @@ function findStockItem(stockItem)
       json: true
     }
   ).then(resp => ({ stockItem: resp.body, pdfData: stockItem }));
+}
+
+function findStockItems(itemNumbers)
+{
+  return rp(
+    {
+      uri: cnf.get('api:uri') + '/stock/findin',
+      headers: {
+        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
+      },
+      body: { itemNumbers },
+      json: true
+    }
+  ).then(resp => resp.body);
 }
 
 function findContdocItem(stockItem)
