@@ -9,6 +9,7 @@ const each 					= require('lodash/each');
 const reduce        = require('lodash/reduce');
 const find          = require('lodash/find');
 const get           = require('lodash/get');
+const uniq          = require('lodash/uniq');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -58,7 +59,7 @@ function updateSettings(insts, settings) {
       settings.fixed_date = moment(settings.fixed_date + ' ' +  moment().format('HH:mm:ss.SSS')).format('YYYY-MM-DD HH:mm:ss.SSS');
   else
     settings.fixed_date = null;
-    
+
   const dir       = get(settings, 'watch_dir');
   const sWatchDir = (dir && dir.length && dir.substr(-1) !== '/' ? dir + '/' : dir) ;
 
@@ -150,7 +151,7 @@ function initPDFWatcher(insts) {
                 if (obj.resp.body) {
                   const m = moment(obj.resp.body.SID);
                   if (m.isValid() && moment(m.format('YYYY-MM-DD')).isSameOrAfter(moment(obj.stockItem.lastser).format('YYYY-MM-DD')))
-                    throw new Error('Certificate file ' + path + ' already processed');
+                    throw new Error('PDF ' + path + ' is al verwerkt.');
                 }
 
                 return obj.stockItem;
@@ -485,7 +486,7 @@ function genStockItemFromPDF(path) {
   return new bb((resolve, reject) => {
     pdfText(path, function(err, chunks) {
       if (!chunks)
-        return reject(new Error('Could not read contents of file: ' + file));
+        return reject(new Error('Could not read contents of file: ' + path));
 
       const stockItem = {};
 
@@ -504,44 +505,27 @@ function genStockItemFromPDF(path) {
 
 function extractArticleNumber(chunks, path)
 {
-  return new bb((resolve, reject) => {
-    const multipleErr = new Error('Multiple certificates found in one file.');
+  const re = /^([a-zA-Z0-9]){3,20}$/;
+  const matches = [];
 
-    // are there more pages with an article number?
-    const fileHasMultipleMatches = (str, index) => {
-      if (chunks.indexOf(str, index) > -1)
-          return true;
+    chunks.forEach(str => {
+      let a = null;
 
-      return false;
-    }
+      a = re.exec(str);
+      if (!a) return;
 
-    const identificationNumberIndex = chunks.indexOf('Identification number');
-    const artikelnummerIndex        = chunks.indexOf('Artikelnummer:');
-    const distinguishingNumberIndex = chunks.indexOf('(Distinguishing nr)');
+      matches.push(a[0]);
+    });
 
-    if (identificationNumberIndex > -1) {
-      if (fileHasMultipleMatches('Identification number', identificationNumberIndex + 3))
-        return reject(multipleErr);
+    return findStockItems(matches).then(results => {
+      if (!results.length)
+        throw new Error('Geen artikel gevonden voor PDF: ' + path);
 
-      return resolve(chunks[identificationNumberIndex + 2]);
-    }
+      if (results.length > 1)
+          throw new Error('Meerdere artikelen gevonden voor PDF: ' + path);
 
-    if (artikelnummerIndex > -1) {
-      if (fileHasMultipleMatches('Artikelnummer:', artikelnummerIndex + 2))
-        return reject(multipleErr);
-
-      return resolve(chunks[artikelnummerIndex + 1]);
-    }
-
-    if (distinguishingNumberIndex > -1) {
-        if (fileHasMultipleMatches('(Distinguishing nr)', distinguishingNumberIndex + 2))
-          return reject(multipleErr);
-
-        return resolve(chunks[distinguishingNumberIndex + 1]);
-    }
-
-    return reject('No articleNumber found in file ' + path);
-  });
+      return results[0].ITEMNO;
+    });
 }
 
 function extractDate(chunks) {
