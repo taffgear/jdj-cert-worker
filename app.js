@@ -198,7 +198,7 @@ function initCSVWatcher(insts) {
             return findStockItems(data.map(o => o.articleNumber))
               .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
               .then(mapped => {
-                  return bb.map(mapped.slice(10, 20), (obj) => {
+                  return bb.map(mapped, obj => {
                       const serno = (obj.PATSerialnumber.length ? obj.PATSerialnumber : obj['SERNO'])
                       const body = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
 
@@ -240,17 +240,17 @@ function initCSVWatcher(insts) {
 function genPDF(obj)
 {
   return new bb((resolve, reject) => {
+    obj.testDate = moment(obj.testDate).format('DD-MM-YYYY');
+    obj.testTime = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
+
     const filePath  = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
     const fileName  = filePath + '/' + obj.ITEMNO + '.pdf';
     const html      = genHTML(obj);
 
-    obj.testDate = moment(obj.testDate).format('DD-MM-YYYY');
-    obj.testTime = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
-
     fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
 
-      wkhtmltopdf(html, { output: fileName }, (err) => resolve(fileName));
+      wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => resolve(fileName));
     });
   });
 }
