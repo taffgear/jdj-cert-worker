@@ -3,6 +3,7 @@ const fs            = require('fs');
 const bb            = require('bluebird');
 const Redis         = require('ioredis');
 const chokidar      = require('chokidar');
+const io            = require('socket.io')();
 const rp            = require('request-promise');
 const each 					= require('lodash/each');
 const reduce        = require('lodash/reduce');
@@ -22,6 +23,7 @@ const watchDir      = cnf.get('watchdir') || '/home/markhorsman/jdj-certificates
 const genHTML       = require('./lib/genPDFHTMLString');
 
 getInsts()
+  .then(setup)
   .then(run)
   .catch(e => { console.log(e); process.exit(); })
 ;
@@ -36,7 +38,8 @@ function getInsts()
     console.log('initializing resources ... ');
 
     return bb.props({
-        redis   : new Redis()
+        redis   : new Redis(),
+        clients : []
     }).tap(insts => {
         insts.pdfWatcher  = initPDFWatcher(insts);
         insts.csvWacher   = initCSVWatcher(insts);
@@ -44,12 +47,34 @@ function getInsts()
     });
 }
 
+function setup(insts) {
+  io.on('connection', client => {
+    insts.clients.push(client);
+
+    client.on('disconnect', () => {
+      insts.clients.splice(insts.clients.indexOf(client), 1);
+    });
+  });
+
+  return insts;
+}
+
 function run() {
   console.log('JDJ Certificate Worker running...');
+
+  const port = cnf.get('server:port') || 8000;
+  io.listen(port);
+  console.log('socket.io server listening on port %s', port);
 }
 
 function buildRedisKey(category) {
   return "jdj:logs:" + category + ":" + moment().unix();
+}
+
+function notifyClients(type, msg) {
+  this.clients.forEach(client => {
+    client.emit(type, msg);
+  });
 }
 
 function initPDFWatcher(insts) {
@@ -113,16 +138,20 @@ function initPDFWatcher(insts) {
             .then(result => {
               watcher.unwatch(path);
 
-              const logMsg = JSON.stringify({ msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.pdfData.itemno, ts: moment().unix()});
+              const logMsg = { msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.pdfData.itemno, ts: moment().format('x')};
 
-              insts.redis.set(buildRedisKey("success"), logMsg);
-              console.log(result);
+              insts.redis.set(buildRedisKey("success"), JSON.stringify(logMsg));
+
+              notifyClients.call(insts, 'stockItem', result.stockItem);
+              notifyClients.call(insts, 'log', logMsg);
             })
             .catch(e => {
-              insts.redis.set(buildRedisKey("failed"), JSON.stringify({ msg: e.message, ts: moment().unix() }));
+              const logMsg = { msg: e.message, ts: moment().format('x') };
+              insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
               console.log(e);
               fs.unlinkSync(path);
 
+              notifyClients.call(insts, 'log', logMsg);
             })
             .finally(() => pending.splice(pending.indexOf(path), 1))
           ;
@@ -169,7 +198,7 @@ function initCSVWatcher(insts) {
             return findStockItems(data.map(o => o.articleNumber))
               .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
               .then(mapped => {
-                  return bb.map(mapped, (obj) => {
+                  return bb.map(mapped.slice(10, 20), (obj) => {
                       const serno = (obj.PATSerialnumber.length ? obj.PATSerialnumber : obj['SERNO'])
                       const body = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
 
@@ -181,18 +210,24 @@ function initCSVWatcher(insts) {
                           return createContdoc(contDocBody).then(resp => filePath);
                         })
                         .then(filePath => {
-                          const logMsg = JSON.stringify({ msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().unix()});
+                          const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x')};
 
-                          return insts.redis.set(buildRedisKey("success"), logMsg);
+                          notifyClients.call(insts, 'stockItem', obj);
+                          notifyClients.call(insts, 'log', logMsg);
+
+                          return insts.redis.set(buildRedisKey("success"), JSON.stringify(logMsg));
                         })
                         .catch(e => {
                           console.log(e);
-                          return insts.redis.set(buildRedisKey("failed"), JSON.stringify({ msg: e.message, ts: moment().unix() }));
+                          const logMsg = { msg: e.message, ts: moment().format('x') };
+                          notifyClients.call(insts, 'log', logMsg);
+
+                          return insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
                         })
                       ;
                   }, { concurrency : 1 }).then(results => {
-                      console.log(results);
                       watcher.unwatch(path);
+                      fs.unlinkSync(path);
                   });
               })
           });
@@ -208,6 +243,9 @@ function genPDF(obj)
     const filePath  = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
     const fileName  = filePath + '/' + obj.ITEMNO + '.pdf';
     const html      = genHTML(obj);
+
+    obj.testDate = moment(obj.testDate).format('DD-MM-YYYY');
+    obj.testTime = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
 
     fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
