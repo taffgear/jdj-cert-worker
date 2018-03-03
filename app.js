@@ -8,6 +8,7 @@ const rp            = require('request-promise');
 const each 					= require('lodash/each');
 const reduce        = require('lodash/reduce');
 const find          = require('lodash/find');
+const get           = require('lodash/get');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -19,7 +20,6 @@ const wkhtmltopdf   = require('wkhtmltopdf');
 
 const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
-const watchDir      = cnf.get('watchdir') || '/home/markhorsman/jdj-certificates/';
 const genHTML       = require('./lib/genPDFHTMLString');
 
 getInsts()
@@ -39,17 +39,53 @@ function getInsts()
 
     return bb.props({
         redis   : new Redis(),
-        clients : []
+        clients : [],
+        watchDir: cnf.get('watchdir')
     }).tap(insts => {
-        insts.pdfWatcher  = initPDFWatcher(insts);
-        insts.csvWacher   = initCSVWatcher(insts);
-        return insts;
+        return insts.redis.get('jdj:settings').then(result => {
+          insts.settings = updateSettings(insts, (result ? JSON.parse(result) : {}));
+
+          insts.pdfWatcher  = initPDFWatcher(insts);
+          insts.csvWacher   = initCSVWatcher(insts);
+
+          return insts;
+        });
     });
+}
+
+function updateSettings(insts, settings) {
+  if (get(settings, 'fixed_date') && moment(settings.fixed_date).isValid())
+      settings.fixed_date = moment(settings.fixed_date + ' ' +  moment().format('HH:mm:ss.SSS')).format('YYYY-MM-DD HH:mm:ss.SSS');
+  else
+    settings.fixed_date = null;
+    
+  const dir       = get(settings, 'watch_dir');
+  const sWatchDir = (dir && dir.length && dir.substr(-1) !== '/' ? dir + '/' : dir) ;
+
+  if (sWatchDir && fs.existsSync(sWatchDir) && insts.watchDir !== sWatchDir) {
+    insts.watchDir = sWatchDir;
+
+    if (insts.pdfWatcher) {
+      insts.pdfWatcher.close();
+      insts.csvWacher.close();
+
+      insts.pdfWatcher  = initPDFWatcher(insts);
+      insts.csvWacher   = initCSVWatcher(insts);
+    }
+  }
+
+  insts.settings = settings;
+
+  return settings;
 }
 
 function setup(insts) {
   io.on('connection', client => {
     insts.clients.push(client);
+
+    client.on('settings', settings => {
+      updateSettings(insts, settings);
+    });
 
     client.on('disconnect', () => {
       insts.clients.splice(insts.clients.indexOf(client), 1);
@@ -59,7 +95,7 @@ function setup(insts) {
   return insts;
 }
 
-function run() {
+function run(insts) {
   console.log('JDJ Certificate Worker running...');
 
   const port = cnf.get('server:port') || 8000;
@@ -78,7 +114,7 @@ function notifyClients(type, msg) {
 }
 
 function initPDFWatcher(insts) {
-  const watcher = chokidar.watch(watchDir + '.', {
+  const watcher = chokidar.watch(insts.watchDir + '.', {
       persistent: true,
       ignored: function (path, stat) {
           if (!stat) return false;
@@ -121,6 +157,9 @@ function initPDFWatcher(insts) {
             })
             .then(findStockItem)
             .then(obj => {
+              if (get(insts.settings, 'fixed_date'))
+                  obj.pdfData.lastser = insts.settings.fixed_date;
+
               const body = genUpdateStockItemBody(obj.pdfData.lastser, obj.pdfData.serno, obj.stockItem.STATUS, obj.pdfData.itemno);
 
               return updateStockItem(body)
@@ -162,7 +201,7 @@ function initPDFWatcher(insts) {
 }
 
 function initCSVWatcher(insts) {
-  const watcher = chokidar.watch(watchDir + '.', {
+  const watcher = chokidar.watch(insts.watchDir + '.', {
       persistent: true,
       ignored: function (path, stat) {
           if (!stat) return false;
@@ -193,14 +232,14 @@ function initCSVWatcher(insts) {
           pending.push(path);
 
           getJSONFromCSV(path)
-          .then(prepCSVObjects)
+          .then(data => prepCSVObjects.call(insts, data))
           .then(data => {
             return findStockItems(data.map(o => o.articleNumber))
               .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
               .then(mapped => {
                   return bb.map(mapped, obj => {
-                      const serno = (obj.PATSerialnumber.length ? obj.PATSerialnumber : obj['SERNO'])
-                      const body = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
+                      const serno = (obj.PATSerialnumber.length ? obj.PATSerialnumber : obj['SERNO']);
+                      const body  = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
 
                       return updateStockItem(body)
                         .then(resp => genPDF(obj))
@@ -211,6 +250,8 @@ function initCSVWatcher(insts) {
                         })
                         .then(filePath => {
                           const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x')};
+
+                          obj['LASTSER#1'] = obj.testDate;
 
                           notifyClients.call(insts, 'stockItem', obj);
                           notifyClients.call(insts, 'log', logMsg);
@@ -311,6 +352,13 @@ function prepCSVObjects(data)
   return reduce(data, (acc, obj) => {
     if (!obj.articleNumber || !obj.articleNumber.length)
       return acc;
+
+    if (get(this.settings, 'fixed_date')) {
+      obj.testDate = this.settings.fixed_date;
+
+      acc.push(obj);
+      return acc;
+    }
 
     if (!obj.testDate || !obj.testDate.length)
       return acc;
