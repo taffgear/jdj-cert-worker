@@ -9,6 +9,7 @@ const each 					= require('lodash/each');
 const reduce        = require('lodash/reduce');
 const find          = require('lodash/find');
 const get           = require('lodash/get');
+const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
@@ -16,12 +17,43 @@ const nconf         = require('nconf');
 const fsPath        = require('fs-path');
 const csv           = require('csvtojson');
 const wkhtmltopdf   = require('wkhtmltopdf');
+const uuid          = require('uuid/v4');
 
 // TODO: run sudo apt-get install xvfb libfontconfig wkhtmltopdf on server!!!
 
 const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
 const genHTML       = require('./lib/genPDFHTMLString');
+
+const discardNonStockItemProps = [
+  'testDate',
+  'testTime',
+  'testedWith',
+  'customerName',
+  'customerAddress1',
+  'customerAddress2',
+  'customerAddress3',
+  'customerAddress4',
+  'customerPostcode',
+  'PATModel',
+  'PATSerialnumber',
+  'articleNumber',
+  'articleSerialnumber',
+  'articleDescription',
+  'testStatus',
+  'testGroup',
+  'testGroupVoltage',
+  'testGroupDescription',
+  'testGroupStatus',
+  'test1',
+  'test2',
+  'test3',
+  'test4',
+  'test5',
+  'test6',
+  'test7',
+  'test8'
+];
 
 getInsts()
   .then(setup)
@@ -145,7 +177,7 @@ function initPDFWatcher(insts) {
       watcher.on('add', (path) => {
           pending.push(path);
 
-          genStockItemFromPDF(path)
+          getStockItemFromPDF(path)
             .then(findContdocItem)
             .then(obj => {
                 if (obj.resp.body) {
@@ -154,46 +186,43 @@ function initPDFWatcher(insts) {
                     throw new Error('PDF ' + path + ' is al verwerkt.');
                 }
 
+                if (get(insts.settings, 'fixed_date'))
+                    obj.stockItem['LASTSER#1'] = insts.settings.fixed_date;
+
                 return obj.stockItem;
             })
-            .then(findStockItem)
-            .then(obj => {
-              if (get(insts.settings, 'fixed_date'))
-                  obj.pdfData.lastser = insts.settings.fixed_date;
-
-              const body = genUpdateStockItemBody(obj.pdfData.lastser, obj.pdfData.serno, obj.stockItem.STATUS, obj.pdfData.itemno);
+            .then(stockItem => {
+              const body = genUpdateStockItemBody(stockItem['LASTSER#1'], stockItem.SERNO, stockItem.STATUS, stockItem.ITEMNO);
 
               return updateStockItem(body)
-                .then(resp => ({ stockItem: obj.stockItem, pdfData: obj.pdfData, resp }))
+                .then(resp => ({ stockItem, resp }))
               ;
             })
             .then(copyPDFToFolder)
             .then(obj => {
-              const body = genCreateContDocBody(obj.pdfData.itemno, obj.pdfData.filename, obj.pdfData.lastser);
+              const body = genCreateContDocBody(obj.stockItem.ITEMNO, obj.filename, obj.stockItem['LASTSER#1']);
 
               return createContdoc(body)
-                .then(resp => ({ stockItem: obj.stockItem, pdfData: obj.pdfData, resp }))
+                .then(resp => ({ stockItem: obj.stockItem, resp }))
               ;
             })
             .then(result => {
-              watcher.unwatch(path);
-
-              const logMsg = { msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.pdfData.itemno, ts: moment().format('x')};
+              const logMsg = { msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.stockItem.ITEMNO, ts: moment().format('x'), id: uuid()};
 
               insts.redis.set(buildRedisKey("success"), JSON.stringify(logMsg));
-
-              notifyClients.call(insts, 'stockItem', result.stockItem);
+              notifyClients.call(insts, 'stockItem', omit(result.stockItem, ['filename', 'path']));
               notifyClients.call(insts, 'log', logMsg);
             })
             .catch(e => {
               const logMsg = { msg: e.message, ts: moment().format('x') };
-              insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
-              console.log(e);
-              fs.unlinkSync(path);
 
+              insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
               notifyClients.call(insts, 'log', logMsg);
             })
-            .finally(() => pending.splice(pending.indexOf(path), 1))
+            .finally(() => {
+              pending.splice(pending.indexOf(path), 1);
+              watcher.unwatch(path);
+            })
           ;
       });
   });
@@ -235,7 +264,7 @@ function initCSVWatcher(insts) {
           getJSONFromCSV(path)
           .then(data => prepCSVObjects.call(insts, data))
           .then(data => {
-            return findStockItems(data.map(o => o.articleNumber))
+            return findStockItems(uniq(data.map(o => o.articleNumber)))
               .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
               .then(mapped => {
                   return bb.map(mapped, obj => {
@@ -250,26 +279,25 @@ function initCSVWatcher(insts) {
                           return createContdoc(contDocBody).then(resp => filePath);
                         })
                         .then(filePath => {
-                          const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x')};
 
-                          obj['LASTSER#1'] = obj.testDate;
+                          const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x'), id: uuid()};
 
-                          notifyClients.call(insts, 'stockItem', obj);
+                          obj['LASTSER#1'] = obj.testDate;prepCSVObjects
+
+                          notifyClients.call(insts, 'stockItem', omit(obj, discardNonStockItemProps));
                           notifyClients.call(insts, 'log', logMsg);
 
                           return insts.redis.set(buildRedisKey("success"), JSON.stringify(logMsg));
                         })
                         .catch(e => {
-                          console.log(e);
                           const logMsg = { msg: e.message, ts: moment().format('x') };
                           notifyClients.call(insts, 'log', logMsg);
 
                           return insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
                         })
                       ;
-                  }, { concurrency : 1 }).then(results => {
+                  }, { concurrency : 2 }).then(results => {
                       watcher.unwatch(path);
-                      fs.unlinkSync(path);
                   });
               })
           });
@@ -331,10 +359,10 @@ function mapCSVObjectsToStockItems(objects, stockItems)
 {
   if (!stockItems || !stockItems.length) return [];
 
-  return reduce(objects, (acc, obj) => {
-    const stockItem = find(stockItems, { 'ITEMNO' : obj.articleNumber });
+  return reduce(stockItems, (acc, stockItem) => {
+    const obj = find(objects, { 'articleNumber' : stockItem.ITEMNO });
 
-    if (!stockItem) return acc;
+    if (!obj) return acc;
 
     const testDate = moment(obj.testDate);
     const lastser = moment(stockItem['LASTSER#1']);
@@ -350,7 +378,7 @@ function mapCSVObjectsToStockItems(objects, stockItems)
 
 function prepCSVObjects(data)
 {
-  return reduce(data, (acc, obj) => {
+  const prepped =  reduce(data, (acc, obj) => {
     if (!obj.articleNumber || !obj.articleNumber.length)
       return acc;
 
@@ -375,6 +403,13 @@ function prepCSVObjects(data)
     acc.push(obj);
     return acc;
   }, []);
+  
+  return prepped.sort(function (a, b) {
+    const date1 = new Date(a.testDate);
+    const date2 = new Date(b.testDate);
+
+    return date1 - date2;
+  });
 }
 
 function getJSONFromCSV(path)
@@ -396,13 +431,13 @@ function getJSONFromCSV(path)
 function copyPDFToFolder(obj)
 {
     const filePath = cnf.get('pdfDir') + obj.stockItem.PGROUP + '/' + obj.stockItem.GRPCODE;
-    obj.pdfData.filename = filePath + '/' + obj.stockItem.ITEMNO + '.pdf';
+    obj.filename = filePath + '/' + obj.stockItem.ITEMNO + '.pdf';
 
     return new bb((resolve, reject) => {
       fsPath.mkdir(filePath, function(err) {
         if (err) return reject(err);
 
-        fsPath.copy(obj.pdfData.path, obj.pdfData.filename, function(err) {
+        fsPath.copy(obj.stockItem.path, obj.filename, err => {
           if (err) return reject(err);
 
           return resolve(obj);
@@ -410,19 +445,6 @@ function copyPDFToFolder(obj)
       });
 
     });
-}
-
-function findStockItem(stockItem)
-{
-  return rp(
-    {
-      uri: cnf.get('api:uri') + '/stock/find/' + stockItem.itemno,
-      headers: {
-        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      },
-      json: true
-    }
-  ).then(resp => ({ stockItem: resp.body, pdfData: stockItem }));
 }
 
 function findStockItems(itemNumbers)
@@ -443,7 +465,7 @@ function findContdocItem(stockItem)
 {
   return rp(
     {
-      uri: cnf.get('api:uri') + '/contdoc/find/' + stockItem.itemno,
+      uri: cnf.get('api:uri') + '/contdoc/find/' + stockItem.ITEMNO,
       headers: {
         'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
       },
@@ -482,20 +504,18 @@ function createContdoc(body)
   );
 }
 
-function genStockItemFromPDF(path) {
+function getStockItemFromPDF(path) {
   return new bb((resolve, reject) => {
-    pdfText(path, function(err, chunks) {
+    pdfText(path, (err, chunks) => {
       if (!chunks)
         return reject(new Error('Could not read contents of file: ' + path));
 
-      const stockItem = {};
+      return findStockItem(chunks, path)
+        .then(stockItem => {
+          stockItem.SERNO         = extractSerialNumber(chunks);
+          stockItem['LASTSER#1']  = extractDate(chunks);
+          stockItem.path          = path;
 
-      return extractArticleNumber(chunks, path)
-        .then(articleNumber => {
-          stockItem.itemno  = articleNumber;
-          stockItem.serno   = extractSerialNumber(chunks);
-          stockItem.lastser = extractDate(chunks);
-          stockItem.path    = path;
           resolve(stockItem)
       })
       .catch(e => reject(e));
@@ -503,7 +523,7 @@ function genStockItemFromPDF(path) {
   });
 }
 
-function extractArticleNumber(chunks, path)
+function findStockItem(chunks, path)
 {
   const re = /^([a-zA-Z0-9]){3,20}$/;
   const matches = [];
@@ -524,7 +544,7 @@ function extractArticleNumber(chunks, path)
       if (results.length > 1)
           throw new Error('Meerdere artikelen gevonden voor PDF: ' + path);
 
-      return results[0].ITEMNO;
+      return results[0];
     });
 }
 
