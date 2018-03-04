@@ -136,8 +136,8 @@ function run(insts) {
   console.log('socket.io server listening on port %s', port);
 }
 
-function buildRedisKey(category) {
-  return "jdj:logs:" + category + ":" + moment().unix();
+function buildRedisKey(id, category) {
+  return "jdj:logs:" + category + ":" + id;
 }
 
 function notifyClients(type, msg) {
@@ -163,6 +163,7 @@ function initPDFWatcher(insts) {
       depth: 0,
       ignorePermissionErrors: false,
       atomic: true,
+      usePolling: true,
       awaitWriteFinish: {
           stabilityThreshold: 2000,
           pollInterval: 100
@@ -209,19 +210,19 @@ function initPDFWatcher(insts) {
             .then(result => {
               const logMsg = { msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.stockItem.ITEMNO, ts: moment().format('x'), id: uuid()};
 
-              insts.redis.set(buildRedisKey("success"), JSON.stringify(logMsg));
+              insts.redis.set(buildRedisKey(logMsg.id, "success"), JSON.stringify(logMsg));
               notifyClients.call(insts, 'stockItem', omit(result.stockItem, ['filename', 'path']));
               notifyClients.call(insts, 'log', logMsg);
             })
             .catch(e => {
-              const logMsg = { msg: e.message, ts: moment().format('x') };
+              const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
 
-              insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
+              insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
               notifyClients.call(insts, 'log', logMsg);
             })
             .finally(() => {
               pending.splice(pending.indexOf(path), 1);
-              watcher.unwatch(path);
+              // watcher.unwatch(path);
             })
           ;
       });
@@ -247,6 +248,7 @@ function initCSVWatcher(insts) {
       depth: 0,
       ignorePermissionErrors: false,
       atomic: true,
+      usePolling: true,
       awaitWriteFinish: {
           stabilityThreshold: 2000,
           pollInterval: 100
@@ -287,17 +289,17 @@ function initCSVWatcher(insts) {
                           notifyClients.call(insts, 'stockItem', omit(obj, discardNonStockItemProps));
                           notifyClients.call(insts, 'log', logMsg);
 
-                          return insts.redis.set(buildRedisKey("success"), JSON.stringify(logMsg));
+                          return insts.redis.set(buildRedisKey(logMsg.id, "success"), JSON.stringify(logMsg));
                         })
                         .catch(e => {
-                          const logMsg = { msg: e.message, ts: moment().format('x') };
+                          const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
                           notifyClients.call(insts, 'log', logMsg);
 
-                          return insts.redis.set(buildRedisKey("failed"), JSON.stringify(logMsg));
+                          return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
                         })
                       ;
-                  }, { concurrency : 2 }).then(results => {
-                      watcher.unwatch(path);
+                  }, { concurrency : 1 }).then(results => {
+                      // watcher.unwatch(path);
                   });
               })
           });
@@ -403,7 +405,7 @@ function prepCSVObjects(data)
     acc.push(obj);
     return acc;
   }, []);
-  
+
   return prepped.sort(function (a, b) {
     const date1 = new Date(a.testDate);
     const date2 = new Date(b.testDate);
