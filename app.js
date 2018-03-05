@@ -155,7 +155,7 @@ function initPDFWatcher(insts) {
           if (path[path.length - 1] === '/')  // don't ignore dirs
               return true;
 
-          return /.*[^.pdf]$/.test(path);
+          return /.*[^.pdf,PDF]$/.test(path);
       },
       ignoreInitial: true,
       followSymlinks: false,
@@ -240,7 +240,7 @@ function initCSVWatcher(insts) {
           if (path[path.length - 1] === '/')  // don't ignore dirs
               return true;
 
-          return /.*[^.csv]$/.test(path);
+          return /.*[^.csv,CSV]$/.test(path);
       },
       ignoreInitial: true,
       followSymlinks: false,
