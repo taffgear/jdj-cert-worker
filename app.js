@@ -530,24 +530,40 @@ function findStockItem(chunks, path)
   const re = /^([a-zA-Z0-9]){3,20}$/;
   const matches = [];
 
-    chunks.forEach(str => {
+  chunks.forEach(chunk => {
+    const parts = chunk.split(' ');
+
+    if (!parts || !parts.length) {
+      let a = null;
+
+      a = re.exec(chunk);
+
+      if (!a) return;
+
+      matches.push(a[0]);
+
+      return;
+    }
+
+    parts.forEach(str => {
       let a = null;
 
       a = re.exec(str);
       if (!a) return;
 
-      matches.push(a[0]);
+       matches.push(a[0]);
     });
+  });
 
-    return findStockItems(matches).then(results => {
-      if (!results.length)
-        throw new Error('Geen artikel gevonden voor PDF: ' + path);
+  return findStockItems(matches).then(results => {
+    if (!results.length)
+      throw new Error('Geen artikel gevonden voor PDF: ' + path);
 
-      if (results.length > 1)
-          throw new Error('Meerdere artikelen gevonden voor PDF: ' + path);
+    if (results.length > 1)
+        throw new Error('Meerdere artikelen gevonden voor PDF: ' + path);
 
-      return results[0];
-    });
+    return results[0];
+  });
 }
 
 function extractDate(chunks) {
