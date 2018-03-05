@@ -317,7 +317,7 @@ function genPDF(obj)
 
     const filePath    = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
     const fileName    = filePath + '/' + obj.ITEMNO + '.pdf';
-    const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PRGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
+    const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
     const html        = genHTML(obj);
 
     fsPath.mkdir(filePath, err => {
@@ -436,7 +436,7 @@ function copyPDFToFolder(obj)
     const filePath = cnf.get('pdfDir') + obj.stockItem.PGROUP + '/' + obj.stockItem.GRPCODE;
     const filename = filePath + '/' + obj.stockItem.ITEMNO + '.pdf';
 
-    obj.filename = cnf.get('pdfDirWin') + '\\' + obj.stockItem.PRGROUP + '\\' + obj.stockItem.GRPCODE + '\\' + obj.stockItem.ITEMNO + '.pdf'
+    obj.filename = cnf.get('pdfDirWin') + '\\' + obj.stockItem.PGROUP + '\\' + obj.stockItem.GRPCODE + '\\' + obj.stockItem.ITEMNO + '.pdf'
 
     return new bb((resolve, reject) => {
       fsPath.mkdir(filePath, function(err) {
