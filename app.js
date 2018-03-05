@@ -315,14 +315,15 @@ function genPDF(obj)
     obj.testDate = moment(obj.testDate).format('DD-MM-YYYY');
     obj.testTime = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
 
-    const filePath  = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
-    const fileName  = filePath + '/' + obj.ITEMNO + '.pdf';
-    const html      = genHTML(obj);
+    const filePath    = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
+    const fileName    = filePath + '/' + obj.ITEMNO + '.pdf';
+    const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PRGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
+    const html        = genHTML(obj);
 
     fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
 
-      wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => resolve(fileName));
+      wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => resolve(winFileName));
     });
   });
 }
@@ -433,13 +434,15 @@ function getJSONFromCSV(path)
 function copyPDFToFolder(obj)
 {
     const filePath = cnf.get('pdfDir') + obj.stockItem.PGROUP + '/' + obj.stockItem.GRPCODE;
-    obj.filename = filePath + '/' + obj.stockItem.ITEMNO + '.pdf';
+    const filename = filePath + '/' + obj.stockItem.ITEMNO + '.pdf';
+
+    obj.filename = cnf.get('pdfDirWin') + '\\' + obj.stockItem.PRGROUP + '\\' + obj.stockItem.GRPCODE + '\\' + obj.stockItem.ITEMNO + '.pdf'
 
     return new bb((resolve, reject) => {
       fsPath.mkdir(filePath, function(err) {
         if (err) return reject(err);
 
-        fsPath.copy(obj.stockItem.path, obj.filename, err => {
+        fsPath.copy(obj.stockItem.path, filename, err => {
           if (err) return reject(err);
 
           return resolve(obj);
