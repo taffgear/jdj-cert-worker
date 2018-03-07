@@ -320,7 +320,7 @@ function genPDF(obj)
     const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
     const html        = genHTML(obj);
 
-    fsPath.mkdir(filePath + '/' + fileName, err => {
+    fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
 
       wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => resolve(winFileName));
