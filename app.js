@@ -320,7 +320,7 @@ function genPDF(obj)
     const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
     const html        = genHTML(obj);
 
-    fsPath.mkdir(filePath, err => {
+    fsPath.mkdir(filePath + '/' + fileName, err => {
       if (err) return reject(err);
 
       wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => resolve(winFileName));
@@ -395,7 +395,7 @@ function prepCSVObjects(data)
     if (!obj.testDate || !obj.testDate.length)
       return acc;
 
-    const m = moment(obj.testDate, "DD/MM/YYYY");
+    const m = moment(obj.testDate, ["DD/MM/YYYY", "DD-MM-YYYY"]);
 
     if (!m.isValid()) return acc;
 
