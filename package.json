@@ -17,6 +17,7 @@
     "request-promise": "^4.2.2",
     "socket.io": "^2.0.4",
     "uuid": "^3.2.1",
-    "wkhtmltopdf": "^0.3.4"
+    "wkhtmltopdf": "^0.3.4",
+    "xvfb": "^0.2.3"
   }
 }

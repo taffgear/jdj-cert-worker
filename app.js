@@ -18,6 +18,8 @@ const fsPath        = require('fs-path');
 const csv           = require('csvtojson');
 const wkhtmltopdf   = require('wkhtmltopdf');
 const uuid          = require('uuid/v4');
+const Xvfb          = require('xvfb');
+const xvfb          = new Xvfb();
 
 // TODO: run sudo apt-get install xvfb libfontconfig wkhtmltopdf on server!!!
 
@@ -323,7 +325,15 @@ function genPDF(obj)
     fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
 
-      wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => resolve(winFileName));
+      xvfb.startSync();
+
+      wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => {
+        xvfb.stopSync();
+
+        if (err) return reject(err);
+
+        resolve(winFileName);
+      });
     });
   });
 }
