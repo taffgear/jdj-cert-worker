@@ -284,7 +284,7 @@ function initCSVWatcher(insts) {
 
                           const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x'), id: uuid()};
 
-                          obj['LASTSER#1'] = obj.testDate;prepCSVObjects
+                          obj['LASTSER#1'] = obj.testDate;
 
                           notifyClients.call(insts, 'stockItem', omit(obj, discardNonStockItemProps));
                           notifyClients.call(insts, 'log', logMsg);
@@ -395,7 +395,7 @@ function prepCSVObjects(data)
     if (!obj.testDate || !obj.testDate.length)
       return acc;
 
-    const m = moment(obj.testDate);
+    const m = moment(obj.testDate, "DD/MM/YYYY");
 
     if (!m.isValid()) return acc;
 
@@ -570,10 +570,17 @@ function findStockItem(chunks, path)
 }
 
 function extractDate(chunks) {
+  const baseDatumIndex          = chunks.indexOf('datum');
   const datumIndex              = chunks.indexOf('Datum:');
   const dateOfCalibrationIndex  = chunks.indexOf('Date of calibration');
   const dateOf1stTestIndex      = chunks.indexOf('(Date of 1st test)');
   const time                    = moment().format('HH:mm:ss.SSS');
+
+  if (baseDatumIndex > -1) {
+    const m = moment(chunks[baseDatumIndex + 1], 'DD-MM-YYYY');
+
+    if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+  }
 
   if (datumIndex > -1) {
     const m = moment(chunks[datumIndex + 1], 'DD-MM-YYYY');
