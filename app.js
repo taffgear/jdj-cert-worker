@@ -327,7 +327,7 @@ function genPDF(obj)
 
       xvfb.startSync();
 
-      wkhtmltopdf(html, { output: fileName, dpi: 300 }, (err) => {
+      wkhtmltopdf(html, { output: fileName,  pageSize: 'letter', disableSmartShrinking: true }, (err) => {
         xvfb.stopSync();
 
         if (err) return reject(err);
