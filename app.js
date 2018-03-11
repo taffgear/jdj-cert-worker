@@ -580,7 +580,7 @@ function findStockItem(chunks, path)
 }
 
 function extractDate(chunks) {
-  const baseDatumIndex          = chunks.indexOf('datum');
+  const baseDatumIndex          = chunks.indexOf('Datum');
   const datumIndex              = chunks.indexOf('Datum:');
   const dateOfCalibrationIndex  = chunks.indexOf('Date of calibration');
   const dateOf1stTestIndex      = chunks.indexOf('(Date of 1st test)');
@@ -609,6 +609,12 @@ function extractDate(chunks) {
 
     if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
   }
+
+  // try specific index (12) for pdfs where only the values can be extracted (because of use of images)
+  const m = moment(chunks[12], 'DD-MM-YYYY');
+
+  if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+
 
   return moment().format('YYYY-MM-DD HH:mm:ss');
 }
