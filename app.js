@@ -314,8 +314,9 @@ function initCSVWatcher(insts) {
 function genPDF(obj)
 {
   return new bb((resolve, reject) => {
-    obj.testDate = moment(obj.testDate).format('DD-MM-YYYY');
-    obj.testTime = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
+    obj.testDate    = moment(obj.testDate).format('DD-MM-YYYY');
+    obj.testTime    = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
+    obj.validUntil  = moment(obj.testDate, 'DD-MM-YYYY').add('years', 1).format('DD-MM-YYYY');
 
     const filePath    = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
     const fileName    = filePath + '/' + obj.ITEMNO + '.pdf';
