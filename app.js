@@ -550,7 +550,7 @@ function findStockItem(chunks, path)
     if (!parts || !parts.length) {
       let a = null;
 
-      a = re.exec(chunk);
+      a = re.exec(chunk.replace(/[^a-z0-9]+/gi, ""));
 
       if (!a) return;
 
@@ -562,7 +562,7 @@ function findStockItem(chunks, path)
     parts.forEach(str => {
       let a = null;
 
-      a = re.exec(str);
+      a = re.exec(str.replace(/[^a-z0-9]+/gi, ""));
       if (!a) return;
 
        matches.push(a[0]);
