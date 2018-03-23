@@ -274,7 +274,16 @@ function initCSVWatcher(insts) {
           .then(data => {
             return findStockItems(uniq(data.map(o => o.articleNumber)))
               .then(results => {
-                  if (!results.length) throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.');
+                  if (!results.length) {
+                    throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.');
+                    // return bb.map(data, obj => {
+                    //   return genPDF(obj)
+                    //     .then(paths => paths.fileName)
+                    //     .then(copyPDFToFailedFolder)
+                    //     .then(removeUnmatchedPDF)
+                    //   ;
+                    // }).then(() => { throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.'); });
+                  }
 
                   return results;
               })
@@ -283,9 +292,6 @@ function initCSVWatcher(insts) {
                   return bb.map(mapped, obj => {
                       if (!obj.match) {
                         return genPDF(obj)
-                          .then(paths => paths.fileName)
-                          .then(copyPDFToFailedFolder)
-                          .then(removeUnmatchedPDF)
                           .then(() => { throw new Error('Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.'); })
                         ;
                       }
@@ -322,6 +328,12 @@ function initCSVWatcher(insts) {
                       // watcher.unwatch(path);
                   });
               })
+              .catch(e => {
+                const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+                notifyClients.call(insts, 'log', logMsg);
+
+                return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+              })
           });
       });
   });
@@ -351,10 +363,20 @@ function genPDF(obj)
 
     }, {});
 
-    const filePath    = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
-    const fileName    = filePath + '/' + obj.ITEMNO + '.pdf';
-    const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
-    const html        = genHTML(prepped);
+    let filePath;
+    let fileName;
+    let winFileName = null;
+
+    if (!obj.ITEMNO) {
+      filePath = cnf.get('pdfDirFailed');
+      fileName = filePath + obj.articleNumber + '.pdf';
+    } else {
+      filePath          = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
+      fileName          = filePath + '/' + obj.ITEMNO + '.pdf';
+      winFileName       = cnf.get('pdfDirWin') + '\\' + obj.PGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
+    }
+
+    const html = genHTML(prepped);
 
     fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
@@ -427,22 +449,6 @@ function mapCSVObjectsToStockItems(objects, stockItems)
 
     return acc;
   }, []);
-
-  // return reduce(stockItems, (acc, stockItem) => {
-  //   const obj = find(objects, { 'articleNumber' : stockItem.ITEMNO });
-  //
-  //   if (!obj) return acc;
-  //
-  //   const testDate = moment(obj.testDate);
-  //   const lastser = moment(stockItem['LASTSER#1']);
-  //
-  //   if (lastser.isValid() && moment(lastser.format('YYYY-MM-DD')).isSameOrAfter(moment(testDate).format('YYYY-MM-DD')))
-  //     return acc;
-  //
-  //   acc.push(Object.assign(obj, stockItem));
-  //
-  //   return acc;
-  // }, []);
 }
 
 function prepCSVObjects(data)
@@ -529,17 +535,6 @@ function copyPDFToFailedFolder(filepath)
         return resolve(filepath);
       });
     });
-}
-
-function removeUnmatchedPDF(filepath)
-{
-  return new bb((resolve, reject) => {
-    fsPath.remove(filepath, err => {
-      if (err) return reject(err);
-
-      return resolve(filepath);
-    });
-  });
 }
 
 function findStockItems(itemNumbers)
