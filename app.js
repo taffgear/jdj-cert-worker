@@ -218,12 +218,15 @@ function initPDFWatcher(insts) {
             })
             .catch(e => {
               // copy pdf to failed folder
-              return copyPDFToFailedFolder(path).then(() => {
-                const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+              return copyPDFToFailedFolder(path)
+                .then(() => {
+                  const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
 
-                insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-                notifyClients.call(insts, 'log', logMsg);
-              });
+                  insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+                  notifyClients.call(insts, 'log', logMsg);
+                })
+                .catch(console.log)
+              ;
             })
             .finally(() => {
               pending.splice(pending.indexOf(path), 1);
@@ -275,7 +278,7 @@ function initCSVWatcher(insts) {
             return findStockItems(uniq(data.map(o => o.articleNumber)))
               .then(results => {
                   if (!results.length) {
-                    return bb.map(data, obj => genPDF(obj))
+                    return bb.map(data, obj => genPDF(obj).catch(console.log))
                       .then(() => {
                         const logMsg = { msg: 'Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.', ts: moment().format('x'), id: uuid() };
                         notifyClients.call(insts, 'log', logMsg);
