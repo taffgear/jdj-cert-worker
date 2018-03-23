@@ -275,14 +275,14 @@ function initCSVWatcher(insts) {
             return findStockItems(uniq(data.map(o => o.articleNumber)))
               .then(results => {
                   if (!results.length) {
-                    throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.');
-                    // return bb.map(data, obj => {
-                    //   return genPDF(obj)
-                    //     .then(paths => paths.fileName)
-                    //     .then(copyPDFToFailedFolder)
-                    //     .then(removeUnmatchedPDF)
-                    //   ;
-                    // }).then(() => { throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.'); });
+                    return bb.map(data, obj => genPDF(obj))
+                      .then(() => {
+                        const logMsg = { msg: 'Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.', ts: moment().format('x'), id: uuid() };
+                        notifyClients.call(insts, 'log', logMsg);
+
+                        return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+                      })
+                    ;
                   }
 
                   return results;
@@ -292,7 +292,12 @@ function initCSVWatcher(insts) {
                   return bb.map(mapped, obj => {
                       if (!obj.match) {
                         return genPDF(obj)
-                          .then(() => { throw new Error('Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.'); })
+                          .then(() => {
+                            const logMsg = { msg: 'Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.', ts: moment().format('x'), id: uuid() };
+                            notifyClients.call(insts, 'log', logMsg);
+
+                            return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+                          })
                         ;
                       }
 
