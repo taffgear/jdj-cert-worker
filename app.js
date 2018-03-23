@@ -217,10 +217,13 @@ function initPDFWatcher(insts) {
               notifyClients.call(insts, 'log', logMsg);
             })
             .catch(e => {
-              const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+              // copy pdf to failed folder
+              return copyPDFToFailedFolder(path).then(() => {
+                const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
 
-              insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-              notifyClients.call(insts, 'log', logMsg);
+                insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+                notifyClients.call(insts, 'log', logMsg);
+              });
             })
             .finally(() => {
               pending.splice(pending.indexOf(path), 1);
@@ -262,25 +265,40 @@ function initCSVWatcher(insts) {
   });
 
   watcher.on('ready', () => {
-      watcher.on('add', (path) => {
-          pending.push(path);
+      watcher.on('add', (file) => {
+          const filename = path.parse(file).base;
+          pending.push(file);
 
-          getJSONFromCSV(path)
+          getJSONFromCSV(file)
           .then(data => prepCSVObjects.call(insts, data))
           .then(data => {
             return findStockItems(uniq(data.map(o => o.articleNumber)))
+              .then(results => {
+                  if (!results.length) throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.');
+
+                  return results;
+              })
               .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
               .then(mapped => {
                   return bb.map(mapped, obj => {
-                      const serno = (obj.PATSerialnumber.length ? obj.PATSerialnumber : obj['SERNO']);
+                      if (!obj.match) {
+                        return genPDF(obj)
+                          .then(paths => paths.fileName)
+                          .then(copyPDFToFailedFolder)
+                          .then(removeUnmatchedPDF)
+                          .then(() => throw new Error('Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.'))
+                        ;
+                      }
+
+                      const serno = (obj.articleSerialnumber.length ? obj.articleSerialnumber : obj['SERNO']);
                       const body  = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
 
                       return updateStockItem(body)
                         .then(resp => genPDF(obj))
-                        .then(filePath => {
-                          const contDocBody = genCreateContDocBody(obj.ITEMNO, filePath, obj.testDate);
+                        .then(paths => {
+                          const contDocBody = genCreateContDocBody(obj.ITEMNO, paths.winFileName, obj.testDate);
 
-                          return createContdoc(contDocBody).then(resp => filePath);
+                          return createContdoc(contDocBody).then(resp => paths.winFileName);
                         })
                         .then(filePath => {
 
@@ -318,10 +336,25 @@ function genPDF(obj)
     obj.testTime    = moment(obj.testTime, ['h:m:a', 'H:m']).format('HH:mm:ss');
     obj.validUntil  = moment(obj.testDate, 'DD-MM-YYYY').add('years', 1).format('DD-MM-YYYY');
 
+    const prepped = reduce(Object.keys(obj), (acc, k) => {
+      if (k.indexOf('test') >= 0 && k.indexOf('@') > 0) {
+        const parts = k.split('@');
+
+        acc[parts[0]] = { value: obj[k], header: parts[1] };
+
+        return acc;
+      }
+
+      acc[k] = { value: obj[k], header: null };
+
+      return acc;
+
+    }, {});
+
     const filePath    = cnf.get('pdfDir') + obj.PGROUP + '/' + obj.GRPCODE;
     const fileName    = filePath + '/' + obj.ITEMNO + '.pdf';
     const winFileName = cnf.get('pdfDirWin') + '\\' + obj.PGROUP + '\\' + obj.GRPCODE + '\\' + obj.ITEMNO + '.pdf'
-    const html        = genHTML(obj);
+    const html        = genHTML(prepped);
 
     fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
@@ -333,7 +366,7 @@ function genPDF(obj)
 
         if (err) return reject(err);
 
-        resolve(winFileName);
+        resolve({winFileName, fileName});
       });
     });
   });
@@ -373,10 +406,14 @@ function mapCSVObjectsToStockItems(objects, stockItems)
 {
   if (!stockItems || !stockItems.length) return [];
 
-  return reduce(stockItems, (acc, stockItem) => {
-    const obj = find(objects, { 'articleNumber' : stockItem.ITEMNO });
+  return reduce(objects, (acc, obj) => {
+    const stockItem = find(stockItems, { 'ITEMNO' : obj.articleNumber });
 
-    if (!obj) return acc;
+    if (!stockItem) {
+      obj.match = false;
+      acc.push(obj);
+      return acc;
+    }
 
     const testDate = moment(obj.testDate);
     const lastser = moment(stockItem['LASTSER#1']);
@@ -384,10 +421,28 @@ function mapCSVObjectsToStockItems(objects, stockItems)
     if (lastser.isValid() && moment(lastser.format('YYYY-MM-DD')).isSameOrAfter(moment(testDate).format('YYYY-MM-DD')))
       return acc;
 
+    obj.match = true;
+
     acc.push(Object.assign(obj, stockItem));
 
     return acc;
   }, []);
+
+  // return reduce(stockItems, (acc, stockItem) => {
+  //   const obj = find(objects, { 'articleNumber' : stockItem.ITEMNO });
+  //
+  //   if (!obj) return acc;
+  //
+  //   const testDate = moment(obj.testDate);
+  //   const lastser = moment(stockItem['LASTSER#1']);
+  //
+  //   if (lastser.isValid() && moment(lastser.format('YYYY-MM-DD')).isSameOrAfter(moment(testDate).format('YYYY-MM-DD')))
+  //     return acc;
+  //
+  //   acc.push(Object.assign(obj, stockItem));
+  //
+  //   return acc;
+  // }, []);
 }
 
 function prepCSVObjects(data)
@@ -461,6 +516,30 @@ function copyPDFToFolder(obj)
       });
 
     });
+}
+
+function copyPDFToFailedFolder(filepath)
+{
+    const filename = cnf.get('failedPdfDir') + path.parse(filepath).base;
+
+    return new bb((resolve, reject) => {
+      fsPath.copy(filepath, filename, err => {
+        if (err) return reject(err);
+
+        return resolve(filepath);
+      });
+    });
+}
+
+function removeUnmatchedPDF(filepath)
+{
+  return new bb((resolve, reject) => {
+    fsPath.remove(filepath, err => {
+      if (err) return reject(err);
+
+      return resolve(filepath);
+    });
+  });
 }
 
 function findStockItems(itemNumbers)
@@ -539,10 +618,11 @@ function getStockItemFromPDF(path) {
   });
 }
 
-function findStockItem(chunks, path)
+function findStockItem(chunks, filepath)
 {
-  const re = /^([a-zA-Z0-9]){3,20}$/;
-  const matches = [];
+  const filename  = path.parse(filepath).base;
+  const re        = /^([a-zA-Z0-9]){3,20}$/;
+  const matches   = [];
 
   chunks.forEach(chunk => {
     const parts = chunk.split(' ');
@@ -569,15 +649,17 @@ function findStockItem(chunks, path)
     });
   });
 
-  return findStockItems(matches).then(results => {
-    if (!results.length)
-      throw new Error('Geen artikel gevonden voor PDF: ' + path);
+  return findStockItems(matches)
+    .then(results => {
+        if (!results.length)
+          throw new Error('Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.');
 
-    if (results.length > 1)
-        throw new Error('Meerdere artikelen gevonden voor PDF: ' + path);
+        if (results.length > 1)
+            throw new Error('Bestandsnaam ' + filename + ' heeft meerdere overeenkomsten in de database.');
 
-    return results[0];
-  });
+        return results[0];
+    })
+  ;
 }
 
 function extractDate(chunks) {
