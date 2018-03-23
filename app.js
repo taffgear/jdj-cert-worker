@@ -286,7 +286,7 @@ function initCSVWatcher(insts) {
                           .then(paths => paths.fileName)
                           .then(copyPDFToFailedFolder)
                           .then(removeUnmatchedPDF)
-                          .then(() => throw new Error('Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.'))
+                          .then(() => { throw new Error('Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.'); })
                         ;
                       }
 
