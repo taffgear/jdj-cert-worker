@@ -520,7 +520,7 @@ function copyPDFToFolder(obj)
 
 function copyPDFToFailedFolder(filepath)
 {
-    const filename = cnf.get('failedPdfDir') + path.parse(filepath).base;
+    const filename = cnf.get('pdfDirFailed') + path.parse(filepath).base;
 
     return new bb((resolve, reject) => {
       fsPath.copy(filepath, filename, err => {
