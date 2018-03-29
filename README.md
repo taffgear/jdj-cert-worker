@@ -7,7 +7,8 @@ Background process for reading/generating certificate files and linking them to 
 https://redis.io/download  
 
 git clone git@github.com:taffgear/jdj-cert-worker.git  
-cd jdj-cert-worker    
+cd jdj-cert-worker  
+yarn install      
 nano config.json    
 
 ```
