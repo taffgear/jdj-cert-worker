@@ -12,6 +12,7 @@ const find          = require('lodash/find');
 const get           = require('lodash/get');
 const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
+const map           = require('lodash/map');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -106,21 +107,23 @@ function stockChanges()
 {
   return getStockStatusUpdates.call(this, moment().format('YYYY-MM-DD'))
     .then(results => bb.each(results, record => {
-        return this.redis.exists(buildStockStatusUpdateKey(record.id, record['DOCDATE#5']))
+        return this.redis.exists(buildStockStatusUpdateKey(record.RECID, record['DOCDATE#5']))
           .then(exists => {
             if (exists) return false;
             if (!record.FILENAME.length) return false;
 
-            const parts     = record.FILENAME.split('Insphire\\');
-            const filePath  = cnf.get('pdfDir') + parts[1];
+            const parts     = record.FILENAME.split(cnf.get('pdfDirWin'));
+            const filePath  = cnf.get('pdfDirWin') + parts[1];
 
             if (!fs.existsSync(filePath)) return false;
 
-            sendEmailNotificationMessage.call(this, record.ITEMNO, filePath);
+            return this.redis.set(buildStockStatusUpdateKey(record.RECID, record['DOCDATE#5']), true)
+              .then(result => ({ itemno: record.ITEMNO, filePath }))
+            ;
           })
     }))
     .then(results => {
-      console.log(results);
+      sendEmailNotificationMessage.call(this, results);
     })
     .catch(console.log)
   ;
@@ -186,7 +189,7 @@ function sendEmailWithCertificate(settings)
           subject: settings.subject, // Subject line
           text: settings.body, // plain text body
           html: settings.body, // html body
-          attachments: [{ path: settings.filePath}]
+          attachments: [{ path: map(settings.articles, 'filePath')}]
       };
 
       return sendMail(transporter, mailOptions)
@@ -235,10 +238,10 @@ function updateSettings(insts, settings) {
   return settings;
 }
 
-function sendEmailNotificationMessage(itemno, filePath)
+function sendEmailNotificationMessage(results)
 {
   this.clients.forEach(client => {
-    client.emit('email', { itemno, filePath });
+    client.emit('email', results);
   });
 }
 
