@@ -106,22 +106,23 @@ function buildStockStatusUpdateKey(id, date)
 function stockChanges()
 {
   return getStockStatusUpdates.call(this, moment().format('YYYY-MM-DD'))
-    .then(results => bb.each(results, record => {
-        return this.redis.exists(buildStockStatusUpdateKey(record.RECID, record['DOCDATE#5']))
-          .then(exists => {
-            if (exists) return false;
-            if (!record.FILENAME.length) return false;
+    .then(results => {
+        return bb.each(results, record => {
+          return this.redis.exists(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#5']))
+            .then(exists => {
+              if (exists) return false;
+              if (!record.FILENAME.length) return false;
 
-            const parts     = record.FILENAME.split(cnf.get('pdfDirWin'));
-            const filePath  = cnf.get('pdfDirWin') + parts[1];
+              const filePath  = cnf.get('pdfDir') + record.PGROUP + '/' + record.GRPCODE + '/' + record.ITEMNO;
 
-            if (!fs.existsSync(filePath)) return false;
+              if (!fs.existsSync(filePath)) return {};
 
-            return this.redis.set(buildStockStatusUpdateKey(record.RECID, record['DOCDATE#5']), true)
-              .then(result => ({ itemno: record.ITEMNO, filePath }))
-            ;
-          })
-    }))
+              return this.redis.set(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#5']), true)
+                .then(result => ({ itemno: record.ITEMNO, filePath }))
+              ;
+            })
+          ;
+      })})
     .then(results => {
       sendEmailNotificationMessage.call(this, results);
     })
