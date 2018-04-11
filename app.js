@@ -58,8 +58,6 @@ const discardNonStockItemProps = [
   'test8'
 ];
 
-// return sendEmailWithCertificate('/home/markhorsman/jdj-certificates/07HKTK0353_Deel1.pdf').then(console.log).catch(console.log);
-
 getInsts()
   .then(setup)
   .then(run)
@@ -118,12 +116,6 @@ function stockChanges()
             if (!fs.existsSync(filePath)) return false;
 
             sendEmailNotificationMessage.call(this, record.ITEMNO, filePath);
-
-            // return sendEmailWithCertificate(filePath)
-            //   .then(info => {
-            //     console.log(info);
-            //     return this.redis.set(buildStockStatusUpdateKey(record.id, record['DOCDATE#5']), record);
-            //   })
           })
     }))
     .then(results => {
@@ -132,14 +124,31 @@ function stockChanges()
     .catch(console.log)
   ;
 }
-function sendEmailWithCertificate(settings)
-{
-  console.log(settings);
 
+function createMailTransport()
+{
   return new Promise((resolve, reject) => {
+
+    if (!cnf.get('exchange:createTestAccount')) return resolve(
+      nodemailer.createTransport({
+        debug: true,
+        host: cnf.get('exchange:host'),
+        secureConnection: true,
+        port: 587,
+        tls: {cipher:'SSLv3'},
+        auth: {
+              user: cnf.get('exchange:username'),
+              pass: cnf.get('exchange:password')
+        },
+        connectionTimeout: 10000
+      })
+    );
+
     nodemailer.createTestAccount((err, account) => {
+      if (err) return reject(err);
+
       // create reusable transporter object using the default SMTP transport
-      let transporter = nodemailer.createTransport({
+      return resolve(nodemailer.createTransport({
           host: 'smtp.ethereal.email',
           port: 587,
           secure: false, // true for 465, false for other ports
@@ -147,19 +156,29 @@ function sendEmailWithCertificate(settings)
               user: account.user, // generated ethereal user
               pass: account.pass // generated ethereal password
           }
-      });
+      }));
+    });
+  });
+}
 
-    // const transporter = nodemailer.createTransport({
-    //   debug: true,
-    //   host: cnf.get('exchange:host'),
-    //   secureConnection: true,
-    //   port: 587,
-    //   tls: {cipher:'SSLv3'},
-    //   auth: {
-    //         user: cnf.get('exchange:username'),
-    //         pass: cnf.get('exchange:password')
-    //   }
-    // });
+function sendMail(transporter, options)
+{
+  return new Promise((resolve, reject) => {
+    // send mail with defined transport object
+    transporter.sendMail(options, (error, info) => {
+        if (error) return reject(error.message);
+
+        console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
+
+        return resolve(info);
+    });
+  });
+}
+
+function sendEmailWithCertificate(settings)
+{
+  return createMailTransport()
+    .then(transporter => {
 
       const mailOptions = {
           from: '"J. de Jonge" <info@jdejonge.nl>', // sender address
@@ -170,17 +189,24 @@ function sendEmailWithCertificate(settings)
           attachments: [{ path: settings.filePath}]
       };
 
+      return sendMail(transporter, mailOptions)
+        .then(info => {
+          this.clients.forEach(client => {
+            client.emit('email_success', info.accepted);
+          });
 
-        // send mail with defined transport object
-        transporter.sendMail(mailOptions, (error, info) => {
-            if (error) return reject(error);
+          return info;
+        })
+        .catch(e => {
+          this.clients.forEach(client => {
+            client.emit('email_failed', e);
+          });
 
-            console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
-
-            return resolve(info);
-        });
-      });
-    });
+          return e;
+        })
+      ;
+    })
+  ;
 }
 
 function updateSettings(insts, settings) {
@@ -212,7 +238,6 @@ function updateSettings(insts, settings) {
 function sendEmailNotificationMessage(itemno, filePath)
 {
   this.clients.forEach(client => {
-    console.log(itemno, filePath);
     client.emit('email', { itemno, filePath });
   });
 }
@@ -221,14 +246,17 @@ function setup(insts) {
   io.on('connection', client => {
     insts.clients.push(client);
 
-    sendEmailNotificationMessage.call(insts, '07HKTK0353', '/home/markhorsman/jdj-certificates/07HKTK0353_Deel1.pdf');
+    if (cnf.get('exchange:test'))
+      sendEmailNotificationMessage.call(insts, cnf.get('exchange:testItemno'), cnf.get('exchange:testFilepath'));
 
     client.on('settings', settings => {
       updateSettings(insts, settings);
     });
 
     client.on('email', data => {
-      sendEmailWithCertificate.call(insts, data);
+      sendEmailWithCertificate.call(insts, data)
+        .then(console.log).catch(console.log)
+      ;
     });
 
     client.on('disconnect', () => {
