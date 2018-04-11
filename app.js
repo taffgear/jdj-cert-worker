@@ -58,6 +58,8 @@ const discardNonStockItemProps = [
   'test8'
 ];
 
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 getInsts()
   .then(setup)
   .then(run)
@@ -109,7 +111,6 @@ function stockChanges()
             if (exists) return false;
             if (!record.FILENAME.length) return false;
 
-            //  \\jdjdn01\applications\Insphire\Gekoppelde documenten\01 Certificaat\02 slijp- en schuurmachines\02STK\02STK1054.pdf
             const parts     = record.FILENAME.split('Insphire\\');
             const filePath  = cnf.get('pdfDir') + parts[1];
 
@@ -133,9 +134,8 @@ function createMailTransport()
       nodemailer.createTransport({
         debug: true,
         host: cnf.get('exchange:host'),
-        secureConnection: true,
+        secureConnection: false,
         port: 587,
-        tls: {cipher:'SSLv3'},
         auth: {
               user: cnf.get('exchange:username'),
               pass: cnf.get('exchange:password')
@@ -181,7 +181,7 @@ function sendEmailWithCertificate(settings)
     .then(transporter => {
 
       const mailOptions = {
-          from: '"J. de Jonge" <info@jdejonge.nl>', // sender address
+          from: cnf.get('exchange:from'), // sender address
           to: settings.recipients, // list of receivers
           subject: settings.subject, // Subject line
           text: settings.body, // plain text body
