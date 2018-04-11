@@ -113,7 +113,7 @@ function stockChanges()
               if (exists) return false;
               if (!record.FILENAME.length) return false;
 
-              const filePath  = cnf.get('pdfDir') + record.PGROUP + '/' + record.GRPCODE + '/' + record.ITEMNO;
+              const filePath  = cnf.get('pdfDir') + record.PGROUP + '/' + record.GRPCODE + '/' + record.ITEMNO + '.pdf';
 
               if (!fs.existsSync(filePath)) return {};
 
