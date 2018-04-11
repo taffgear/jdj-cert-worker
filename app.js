@@ -5,6 +5,7 @@ const Redis         = require('ioredis');
 const chokidar      = require('chokidar');
 const io            = require('socket.io')();
 const rp            = require('request-promise');
+const nodemailer    = require('nodemailer');
 const each 					= require('lodash/each');
 const reduce        = require('lodash/reduce');
 const find          = require('lodash/find');
@@ -57,6 +58,8 @@ const discardNonStockItemProps = [
   'test8'
 ];
 
+// return sendEmailWithCertificate('/home/markhorsman/jdj-certificates/07HKTK0353_Deel1.pdf').then(console.log).catch(console.log);
+
 getInsts()
   .then(setup)
   .then(run)
@@ -83,8 +86,100 @@ function getInsts()
           insts.pdfWatcher  = initPDFWatcher(insts);
           insts.csvWacher   = initCSVWatcher(insts);
 
+          insts.stockChangesInterval = setInterval(() => {
+            stockChanges.call(insts);
+          }, 60 * 1000);
+
+          insts.stockChangesInterval.unref();
+
           return insts;
         });
+    });
+}
+
+function buildStockStatusUpdateKey(id, date)
+{
+  return "jdj:stock_updates:" + id + ":" + date;
+}
+
+function stockChanges()
+{
+  return getStockStatusUpdates.call(this, moment().format('YYYY-MM-DD'))
+    .then(results => bb.each(results, record => {
+        return this.redis.exists(buildStockStatusUpdateKey(record.id, record['DOCDATE#5']))
+          .then(exists => {
+            if (exists) return false;
+            if (!record.FILENAME.length) return false;
+
+            //  \\jdjdn01\applications\Insphire\Gekoppelde documenten\01 Certificaat\02 slijp- en schuurmachines\02STK\02STK1054.pdf
+            const parts     = record.FILENAME.split('Insphire\\');
+            const filePath  = cnf.get('pdfDir') + parts[1];
+
+            if (!fs.existsSync(filePath)) return false;
+
+            sendEmailNotificationMessage.call(this, record.ITEMNO, filePath);
+
+            // return sendEmailWithCertificate(filePath)
+            //   .then(info => {
+            //     console.log(info);
+            //     return this.redis.set(buildStockStatusUpdateKey(record.id, record['DOCDATE#5']), record);
+            //   })
+          })
+    }))
+    .then(results => {
+      console.log(results);
+    })
+    .catch(console.log)
+  ;
+}
+function sendEmailWithCertificate(settings)
+{
+  console.log(settings);
+
+  return new Promise((resolve, reject) => {
+    nodemailer.createTestAccount((err, account) => {
+      // create reusable transporter object using the default SMTP transport
+      let transporter = nodemailer.createTransport({
+          host: 'smtp.ethereal.email',
+          port: 587,
+          secure: false, // true for 465, false for other ports
+          auth: {
+              user: account.user, // generated ethereal user
+              pass: account.pass // generated ethereal password
+          }
+      });
+
+    // const transporter = nodemailer.createTransport({
+    //   debug: true,
+    //   host: cnf.get('exchange:host'),
+    //   secureConnection: true,
+    //   port: 587,
+    //   tls: {cipher:'SSLv3'},
+    //   auth: {
+    //         user: cnf.get('exchange:username'),
+    //         pass: cnf.get('exchange:password')
+    //   }
+    // });
+
+      const mailOptions = {
+          from: '"J. de Jonge" <info@jdejonge.nl>', // sender address
+          to: settings.recipients, // list of receivers
+          subject: settings.subject, // Subject line
+          text: settings.body, // plain text body
+          html: settings.body, // html body
+          attachments: [{ path: settings.filePath}]
+      };
+
+
+        // send mail with defined transport object
+        transporter.sendMail(mailOptions, (error, info) => {
+            if (error) return reject(error);
+
+            console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
+
+            return resolve(info);
+        });
+      });
     });
 }
 
@@ -114,12 +209,26 @@ function updateSettings(insts, settings) {
   return settings;
 }
 
+function sendEmailNotificationMessage(itemno, filePath)
+{
+  this.clients.forEach(client => {
+    console.log(itemno, filePath);
+    client.emit('email', { itemno, filePath });
+  });
+}
+
 function setup(insts) {
   io.on('connection', client => {
     insts.clients.push(client);
 
+    sendEmailNotificationMessage.call(insts, '07HKTK0353', '/home/markhorsman/jdj-certificates/07HKTK0353_Deel1.pdf');
+
     client.on('settings', settings => {
       updateSettings(insts, settings);
+    });
+
+    client.on('email', data => {
+      sendEmailWithCertificate.call(insts, data);
     });
 
     client.on('disconnect', () => {
@@ -600,6 +709,19 @@ function createContdoc(body)
       json: true
     }
   );
+}
+
+function getStockStatusUpdates(date)
+{
+  return rp(
+    {
+      uri: cnf.get('api:uri') + '/contitem/status/' + date,
+      headers: {
+        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
+      },
+      json: true
+    }
+  ).then(resp => resp.body);
 }
 
 function getStockItemFromPDF(path) {
