@@ -124,9 +124,7 @@ function stockChanges()
           ;
       }, { concurrency : 1 })
       .then(results => {
-        const articles = compact(results);
-        console.log(articles);
-        sendEmailNotificationMessage.call(this, articles);
+        sendEmailNotificationMessage.call(this, compact(results));
       })
     ).catch(console.log)
   ;
