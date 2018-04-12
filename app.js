@@ -121,7 +121,7 @@ function stockChanges()
               ;
             })
           ;
-      }}, { concurrency : 1 })
+      }, { concurrency : 1 })
       .then(results => {
         console.log(results);
         sendEmailNotificationMessage.call(this, results);
