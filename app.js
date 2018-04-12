@@ -13,6 +13,7 @@ const get           = require('lodash/get');
 const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
 const map           = require('lodash/map');
+const compact       = require('lodash/compact');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -123,8 +124,9 @@ function stockChanges()
           ;
       }, { concurrency : 1 })
       .then(results => {
-        console.log(results);
-        sendEmailNotificationMessage.call(this, results);
+        const articles = compact(results);
+        console.log(articles);
+        sendEmailNotificationMessage.call(this, articles);
       })
     ).catch(console.log)
   ;
