@@ -197,8 +197,6 @@ function sendEmailWithCertificate(settings)
           attachments
       };
 
-      console.log(mailOptions);
-
       return sendMail(transporter, mailOptions)
         .then(info => {
           this.clients.forEach(client => {
@@ -247,6 +245,8 @@ function updateSettings(insts, settings) {
 
 function sendEmailNotificationMessage(results)
 {
+  if (!results.length) return;
+
   this.clients.forEach(client => {
     client.emit('email', results);
   });
