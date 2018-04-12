@@ -183,8 +183,8 @@ function sendEmailWithCertificate(settings)
 {
   return createMailTransport()
     .then(transporter => {
-      const attachments = reduce(map(settings.articles, 'filePath'), (acc, filePath) => {
-        acc.push({path: filePath});
+      const attachments = reduce(settings.articles, (acc, article) => {
+        acc.push({path: article.filePath});
         return acc;
       }, []);
 
