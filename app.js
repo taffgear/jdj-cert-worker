@@ -106,8 +106,7 @@ function buildStockStatusUpdateKey(id, date)
 function stockChanges()
 {
   return getStockStatusUpdates.call(this, moment().format('YYYY-MM-DD'))
-    .then(results => {
-        return bb.each(results, record => {
+    .then(results => bb.map(results, record => {
           return this.redis.exists(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#5']))
             .then(exists => {
               if (exists) return false;
@@ -122,11 +121,12 @@ function stockChanges()
               ;
             })
           ;
-      })})
-    .then(results => {
-      sendEmailNotificationMessage.call(this, results);
-    })
-    .catch(console.log)
+      }}, { concurrency : 1 })
+      .then(results => {
+        console.log(results);
+        sendEmailNotificationMessage.call(this, results);
+      })
+    ).catch(console.log)
   ;
 }
 
@@ -183,6 +183,10 @@ function sendEmailWithCertificate(settings)
 {
   return createMailTransport()
     .then(transporter => {
+      const attachments = reduce(map(settings.articles, 'filePath'), (acc, filePath) => {
+        acc.push({path: filePath});
+        return acc;
+      }, []);
 
       const mailOptions = {
           from: cnf.get('exchange:from'), // sender address
@@ -190,8 +194,10 @@ function sendEmailWithCertificate(settings)
           subject: settings.subject, // Subject line
           text: settings.body, // plain text body
           html: settings.body, // html body
-          attachments: [{ path: map(settings.articles, 'filePath')}]
+          attachments
       };
+
+      console.log(mailOptions);
 
       return sendMail(transporter, mailOptions)
         .then(info => {
