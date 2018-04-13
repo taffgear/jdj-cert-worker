@@ -108,7 +108,7 @@ function stockChanges()
 {
   return getStockStatusUpdates.call(this, moment().format('YYYY-MM-DD'))
     .then(results => bb.map(results, record => {
-          return this.redis.exists(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#5']))
+          return this.redis.exists(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#2']))
             .then(exists => {
               if (exists) return false;
               if (!record.FILENAME.length) return false;
@@ -117,7 +117,7 @@ function stockChanges()
 
               if (!fs.existsSync(filePath)) return {};
 
-              return this.redis.set(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#5']), true)
+              return this.redis.set(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#2']), true)
                 .then(result => ({ itemno: record.ITEMNO, filePath }))
               ;
             })
@@ -257,7 +257,7 @@ function setup(insts) {
     insts.clients.push(client);
 
     if (cnf.get('exchange:test'))
-      sendEmailNotificationMessage.call(insts, cnf.get('exchange:testItemno'), cnf.get('exchange:testFilepath'));
+      sendEmailNotificationMessage.call(insts, cnf.get('exchange:testArticles'));
 
     client.on('settings', settings => {
       updateSettings(insts, settings);
