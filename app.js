@@ -14,6 +14,7 @@ const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
 const map           = require('lodash/map');
 const compact       = require('lodash/compact');
+const isEmpty       = require('lodash/isEmpty');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -124,7 +125,16 @@ function stockChanges()
           ;
       }, { concurrency : 1 })
       .then(results => {
-        sendEmailNotificationMessage.call(this, compact(results));
+        const articles = reduce(results, (acc, a) => {
+          if (!a || isEmpty(a)) return acc;
+
+          acc.push(a);
+
+          return acc;
+        }, []);
+
+        if (articles.length)
+          sendEmailNotificationMessage.call(this, articles);
       })
     ).catch(console.log)
   ;
