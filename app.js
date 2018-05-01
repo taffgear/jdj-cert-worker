@@ -347,12 +347,12 @@ function initPDFWatcher(insts) {
                 }
 
                 if (get(insts.settings, 'fixed_date'))
-                    obj.stockItem['LASTSER#1'] = insts.settings.fixed_date;
+                    obj.stockItem['LASTSER#3'] = insts.settings.fixed_date;
 
                 return obj.stockItem;
             })
             .then(stockItem => {
-              const body = genUpdateStockItemBody(stockItem['LASTSER#1'], stockItem.SERNO, stockItem.STATUS, stockItem.ITEMNO);
+              const body = genUpdateStockItemBody(stockItem['LASTSER#3'], stockItem.SERNO, stockItem.STATUS, stockItem.ITEMNO);
 
               return updateStockItem(body)
                 .then(resp => ({ stockItem, resp }))
@@ -360,7 +360,7 @@ function initPDFWatcher(insts) {
             })
             .then(copyPDFToFolder)
             .then(obj => {
-              const body = genCreateContDocBody(obj.stockItem.ITEMNO, obj.filename, obj.stockItem['LASTSER#1']);
+              const body = genCreateContDocBody(obj.stockItem.ITEMNO, obj.filename, obj.stockItem['LASTSER#3']);
 
               return createContdoc(body)
                 .then(resp => ({ stockItem: obj.stockItem, resp }))
@@ -475,7 +475,7 @@ function initCSVWatcher(insts) {
 
                           const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x'), id: uuid()};
 
-                          obj['LASTSER#1'] = obj.testDate;
+                          obj['LASTSER#3'] = obj.testDate;
 
                           notifyClients.call(insts, 'stockItem', omit(obj, discardNonStockItemProps));
                           notifyClients.call(insts, 'log', logMsg);
@@ -603,7 +603,7 @@ function mapCSVObjectsToStockItems(objects, stockItems)
     }
 
     const testDate = moment(obj.testDate);
-    const lastser = moment(stockItem['LASTSER#1']);
+    const lastser = moment(stockItem['LASTSER#3']);
 
     if (lastser.isValid() && moment(lastser.format('YYYY-MM-DD')).isSameOrAfter(moment(testDate).format('YYYY-MM-DD')))
       return acc;
@@ -781,7 +781,7 @@ function getStockItemFromPDF(path) {
       return findStockItem(chunks, path)
         .then(stockItem => {
           stockItem.SERNO         = extractSerialNumber(chunks);
-          stockItem['LASTSER#1']  = extractDate(chunks);
+          stockItem['LASTSER#3']  = extractDate(chunks);
           stockItem.path          = path;
 
           resolve(stockItem)
