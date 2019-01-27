@@ -6,14 +6,11 @@ const chokidar      = require('chokidar');
 const io            = require('socket.io')();
 const rp            = require('request-promise');
 const nodemailer    = require('nodemailer');
-const each 					= require('lodash/each');
 const reduce        = require('lodash/reduce');
 const find          = require('lodash/find');
 const get           = require('lodash/get');
 const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
-const map           = require('lodash/map');
-const compact       = require('lodash/compact');
 const isEmpty       = require('lodash/isEmpty');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
@@ -24,8 +21,8 @@ const wkhtmltopdf   = require('wkhtmltopdf');
 const uuid          = require('uuid/v4');
 const Xvfb          = require('xvfb');
 const xvfb          = new Xvfb();
-
-// TODO: run sudo apt-get install xvfb libfontconfig wkhtmltopdf on server!!!
+const ocr           = require('ocr');
+const pdf2img       = require('pdf2img');
 
 const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
@@ -772,26 +769,29 @@ function getStockStatusUpdates(date)
   ).then(resp => resp.body);
 }
 
-function getStockItemFromPDF(path) {
+function getStockItemFromPDF(filepath) {
   return new bb((resolve, reject) => {
-    pdfText(path, (err, chunks) => {
+    pdfText(filepath, (err, chunks) => {
       if (!chunks)
-        return reject(new Error('Could not read contents of file: ' + path));
+        return reject(new Error('Could not read contents of file: ' + filepath));
 
-      return findStockItem(chunks, path)
-        .then(stockItem => {
-          stockItem.SERNO         = extractSerialNumber(chunks);
-          stockItem['LASTSER#3']  = extractDate(chunks);
-          stockItem.path          = path;
+      return findStockItem(chunks, filepath, true)
+        .then(result => {
+            const stockItem = result.stockItem;
+            chunks          = result.chunks;
 
-          resolve(stockItem)
+            stockItem.SERNO         = extractSerialNumber(chunks);
+            stockItem['LASTSER#3']  = extractDate(chunks);
+            stockItem.path          = filepath;
+
+            resolve(stockItem)
       })
-      .catch(e => reject(e));
+      .catch(e => { console.log(e); return reject(e); } );
     });
   });
 }
 
-function findStockItem(chunks, filepath)
+function findStockItem(chunks, filepath, advanced)
 {
   const filename  = path.parse(filepath).base;
   const re        = /^([a-zA-Z0-9]){3,20}$/;
@@ -801,9 +801,7 @@ function findStockItem(chunks, filepath)
     const parts = chunk.split(' ');
 
     if (!parts || !parts.length) {
-      let a = null;
-
-      a = re.exec(chunk.replace(/[^a-z0-9]+/gi, ""));
+      const a = re.exec(chunk.replace(/[^a-z0-9]+/gi, ""));
 
       if (!a) return;
 
@@ -813,14 +811,33 @@ function findStockItem(chunks, filepath)
     }
 
     parts.forEach(str => {
-      let a = null;
+      const a = re.exec(str.replace(/[^a-z0-9]+/gi, ""));
 
-      a = re.exec(str.replace(/[^a-z0-9]+/gi, ""));
       if (!a) return;
 
        matches.push(a[0]);
     });
   });
+
+  if (!matches.length && advanced) return tryOCR(filepath);
+
+  if (!advanced) {
+      const replaceOOsWithZeros = str => {
+          const indices = [];
+
+          for(let i = 0;i < str.length;i++) if (str[i] === 'O') indices.push(i);
+
+          matches.push(str.replace(/O/g, "0"));
+          indices.forEach(index => { matches.push(str.substr(0, index) + '0' + str.substr(index + 1)) });
+      };
+
+      matches.forEach(m => {
+          if (m.indexOf("O") === -1) return;
+
+          replaceOOsWithZeros(m);
+      });
+  }
+
 
   return findStockItems(matches)
     .then(results => {
@@ -830,73 +847,163 @@ function findStockItem(chunks, filepath)
         if (results.length > 1)
             throw new Error('Bestandsnaam ' + filename + ' heeft meerdere overeenkomsten in de database.');
 
-        return results[0];
+        return { stockItem: results[0], chunks };
     })
   ;
 }
 
-function extractDate(chunks) {
-  const baseDatumIndex          = chunks.indexOf('Datum');
-  const datumIndex              = chunks.indexOf('Datum:');
-  const dateOfCalibrationIndex  = chunks.indexOf('Date of calibration');
-  const dateOf1stTestIndex      = chunks.indexOf('(Date of 1st test)');
-  const time                    = moment().format('HH:mm:ss.SSS');
+/**
+ * Optical Character Recognition
+ *
+ * @param filepath
+ */
+function tryOCR(filepath)
+{
+    const filename  = path.parse(filepath).base;
 
-  if (baseDatumIndex > -1) {
+    const imgOptions = {
+        type        : 'bmp',
+        size        : 1024,
+        density     : 600,
+        outputdir   : '/tmp',
+        outputname  : moment().unix() + '_pdf_img',
+        page        : 0
+    };
+
+    return new bb((resolve) => {
+        pdf2img.setOptions(imgOptions);
+
+        pdf2img.convert(filepath, function(err, info) {
+            if (err) {
+                console.log(err);
+                return resolve(false);
+            }
+
+            const img = get(info, 'message[0].path');
+
+            if (!img) return resolve(false);
+
+            const OCROptions = {
+                input   : img,
+                output  : '/tmp/' + filename.replace('pdf', 'txt'),
+                format  : 'text'
+            };
+
+            ocr.recognize(OCROptions, function(err, document) {
+                if (err) {
+                    console.error(err);
+                    return resolve(false);
+                }
+
+                const text = get(document, 'text');
+
+                // cleanup
+                fs.unlinkSync(img);
+                fs.unlinkSync(OCROptions.output);
+
+                return findStockItem(text.split("\n"), filepath, false).then(results => resolve(results));
+            });
+        });
+    });
+}
+
+function extractDate(chunks) {
+    const baseDatumIndex          = chunks.indexOf('Datum');
+    const datumIndex              = chunks.indexOf('Datum:');
+    const dateOfCalibrationIndex  = chunks.indexOf('Date of calibration');
+    const dateOf1stTestIndex      = chunks.indexOf('(Date of 1st test)');
+    const time                    = moment().format('HH:mm:ss.SSS');
+
+    if (baseDatumIndex > -1) {
     const m = moment(chunks[baseDatumIndex + 1], 'DD-MM-YYYY');
 
     if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
-  }
+    }
 
-  if (datumIndex > -1) {
+    if (datumIndex > -1) {
     const m = moment(chunks[datumIndex + 1], 'DD-MM-YYYY');
 
     if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
-  }
+    }
 
-  if (dateOfCalibrationIndex > -1) {
+    if (dateOfCalibrationIndex > -1) {
      const m = moment(chunks[dateOfCalibrationIndex + 2], 'DD MMMM YYYY');
 
      if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
-  }
+    }
 
-  if (dateOf1stTestIndex > -1) {
+    if (dateOf1stTestIndex > -1) {
     const m = moment(chunks[dateOf1stTestIndex + 1], 'DD-MM-YYYY');
 
     if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
-  }
+    }
 
-  // try specific index (12) for pdfs where only the values can be extracted (because of use of images)
-  const m = moment(chunks[12], 'DD-MM-YYYY');
+    // try specific index (12) for pdfs where only the values can be extracted (because of use of images)
+    const m = moment(chunks[12], 'DD-MM-YYYY');
 
-  if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+    if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
 
+    // when OCR is used, we get an array of text lines
 
-  return moment().format('YYYY-MM-DD HH:mm:ss');
+    const datumMatches = chunks.filter(s => s.includes('Datum'));
+
+    if (datumMatches && datumMatches.length) {
+        const parts = datumMatches[0].split(' ');
+        const m     = moment(parts[parts.length  -1], 'DD-MM-YYYY');
+
+        if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+    }
+
+    const dateOfValidationMatches = chunks.filter(s => s.includes('Date of Validation'));
+
+    if (dateOfValidationMatches && dateOfValidationMatches.length) {
+        const parts = dateOfValidationMatches[0].split(' ');
+        const m     = moment(parts[parts.length  -1], 'DD-MM-YYYY');
+
+        if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+    }
+
+    return moment().format('YYYY-MM-DD HH:mm:ss');
 }
 
 function extractSerialNumber(chunks)
 {
-  const serienummerIndex      = chunks.indexOf('Serienummer:');
-  const serialNumberIndex     = chunks.indexOf('Serial number');
-  const traceabilityCodeIndex = chunks.indexOf('(Traceability code)');
+    const serienummerIndex      = chunks.indexOf('Serienummer:');
+    const serialNumberIndex     = chunks.indexOf('Serial number');
+    const traceabilityCodeIndex = chunks.indexOf('(Traceability code)');
 
-  if (serienummerIndex > -1) {
+    if (serienummerIndex > -1) {
     const serialNumber = chunks[serienummerIndex + 1];
 
     if (serialNumber !== 'Betreffende het onderzoek van een:')
       return serialNumber;
-  }
+    }
 
-  if (serialNumberIndex > -1) {
-    const serialNumber = chunks[serialNumberIndex + 1];
+    if (serialNumberIndex > -1) {
+        const serialNumber = chunks[serialNumberIndex + 1];
 
-    if (serialNumber !== ': ')
-      return serialNumber;
-  }
+        if (serialNumber !== ': ')
+        return serialNumber;
+    }
 
-  if (traceabilityCodeIndex > -1)
-    return chunks[traceabilityCodeIndex + 1];
+    if (traceabilityCodeIndex > -1)
+        return chunks[traceabilityCodeIndex + 1];
+
+    // when OCR is used, we get an array of text lines
+
+    const serienummerMatches = chunks.filter(s => s.includes('Serienummer'));
+
+    if (serienummerMatches && serienummerMatches.length) {
+        const parts = serienummerMatches[0].split(' ');
+        return parts[parts.length -1];
+    }
+
+    const serialNumberMatches = chunks.filter(s => s.includes('Serial number'));
+
+    if (serialNumberMatches && serialNumberMatches.length) {
+        const parts = serialNumberMatches[0].split(' ');
+        return parts[parts.length -1];
+    }
 
   return null;
 }

@@ -6,9 +6,17 @@ Background process for reading/generating certificate files and linking them to 
 ### Download and install redis
 https://redis.io/download  
 
+Install required software for PDF to image:
+
+sudo apt-get install graphicsmagick imagemagick ghostscript poppler-utils
+
+wkhtmltopfd:
+
+sudo apt-get install xvfb libfontconfig wkhtmltopdf
+
 git clone git@github.com:taffgear/jdj-cert-worker.git  
 cd jdj-cert-worker  
-yarn install      
+npm install      
 nano config.json    
 
 ```
@@ -32,5 +40,12 @@ nano config.json
 ```
 
 ### Start app
+
+register OCR module:
+
+cd node_modules/ocr
+npm run register -- `email address`
+
+cd ../../
 
 DEBUG=* node app.js
