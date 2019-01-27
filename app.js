@@ -819,7 +819,9 @@ function findStockItem(chunks, filepath, advanced)
     });
   });
 
-  if (!matches.length && advanced) return tryOCR(filepath);
+  // if less then 15 words, there is something wrong, probably cannot read the PDF properly
+
+  if (matches.length <= 15 && advanced) return tryOCR(filepath);
 
   if (!advanced) {
       const replaceOOsWithZeros = str => {
@@ -892,6 +894,8 @@ function tryOCR(filepath)
             ocr.recognize(OCROptions, function(err, document) {
                 if (err) {
                     console.error(err);
+                    fs.unlinkSync(img);
+
                     return resolve(false);
                 }
 
