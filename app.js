@@ -778,10 +778,11 @@ function getStockItemFromPDF(filepath) {
       return findStockItem(chunks, filepath, true)
         .then(result => {
             const stockItem = result.stockItem;
+            const OCR       = result.OCR;
             chunks          = result.chunks;
 
-            stockItem.SERNO         = extractSerialNumber(chunks);
-            stockItem['LASTSER#3']  = extractDate(chunks);
+            stockItem.SERNO         = extractSerialNumber(chunks, OCR);
+            stockItem['LASTSER#3']  = extractDate(chunks, OCR);
             stockItem.path          = filepath;
 
             resolve(stockItem)
@@ -849,7 +850,7 @@ function findStockItem(chunks, filepath, advanced)
         if (results.length > 1)
             throw new Error('Bestandsnaam ' + filename + ' heeft meerdere overeenkomsten in de database.');
 
-        return { stockItem: results[0], chunks };
+        return { stockItem: results[0], chunks, OCR: (!advanced ? true : false) };
     })
   ;
 }
@@ -872,18 +873,18 @@ function tryOCR(filepath)
         page        : 0
     };
 
-    return new bb((resolve) => {
+    return new bb((resolve, reject) => {
         pdf2img.setOptions(imgOptions);
 
         pdf2img.convert(filepath, function(err, info) {
             if (err) {
                 console.log(err);
-                return resolve(false);
+                return reject(e);
             }
 
             const img = get(info, 'message[0].path');
 
-            if (!img) return resolve(false);
+            if (!img) return reject(false);
 
             const OCROptions = {
                 input   : img,
@@ -896,7 +897,7 @@ function tryOCR(filepath)
                     console.error(err);
                     fs.unlinkSync(img);
 
-                    return resolve(false);
+                    return reject(false);
                 }
 
                 const text = get(document, 'text');
@@ -905,13 +906,16 @@ function tryOCR(filepath)
                 fs.unlinkSync(img);
                 fs.unlinkSync(OCROptions.output);
 
-                return findStockItem(text.split("\n"), filepath, false).then(results => resolve(results));
+                return findStockItem(text.split("\n"), filepath, false)
+                    .then(results => resolve(results))
+                    .catch(e => reject(e))
+                ;
             });
         });
     });
 }
 
-function extractDate(chunks) {
+function extractDate(chunks, OCR) {
     const baseDatumIndex          = chunks.indexOf('Datum');
     const datumIndex              = chunks.indexOf('Datum:');
     const dateOfCalibrationIndex  = chunks.indexOf('Date of calibration');
@@ -925,9 +929,9 @@ function extractDate(chunks) {
     }
 
     if (datumIndex > -1) {
-    const m = moment(chunks[datumIndex + 1], 'DD-MM-YYYY');
+        const m = moment(chunks[datumIndex + 1], 'DD-MM-YYYY');
 
-    if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+        if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
     }
 
     if (dateOfCalibrationIndex > -1) {
@@ -946,6 +950,8 @@ function extractDate(chunks) {
     const m = moment(chunks[12], 'DD-MM-YYYY');
 
     if (m.isValid()) return m.format('YYYY-MM-DD') + ' ' + time;
+
+    if (!OCR) return moment().format('YYYY-MM-DD HH:mm:ss');
 
     // when OCR is used, we get an array of text lines
 
@@ -970,17 +976,17 @@ function extractDate(chunks) {
     return moment().format('YYYY-MM-DD HH:mm:ss');
 }
 
-function extractSerialNumber(chunks)
+function extractSerialNumber(chunks, OCR)
 {
     const serienummerIndex      = chunks.indexOf('Serienummer:');
     const serialNumberIndex     = chunks.indexOf('Serial number');
     const traceabilityCodeIndex = chunks.indexOf('(Traceability code)');
 
     if (serienummerIndex > -1) {
-    const serialNumber = chunks[serienummerIndex + 1];
+        const serialNumber = chunks[serienummerIndex + 1];
 
-    if (serialNumber !== 'Betreffende het onderzoek van een:')
-      return serialNumber;
+        if (serialNumber !== 'Betreffende het onderzoek van een:')
+            return serialNumber;
     }
 
     if (serialNumberIndex > -1) {
@@ -992,6 +998,8 @@ function extractSerialNumber(chunks)
 
     if (traceabilityCodeIndex > -1)
         return chunks[traceabilityCodeIndex + 1];
+
+    if (!OCR) return null;
 
     // when OCR is used, we get an array of text lines
 
