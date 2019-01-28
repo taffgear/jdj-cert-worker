@@ -384,7 +384,7 @@ function initPDFWatcher(insts) {
             })
             .finally(() => {
               pending.splice(pending.indexOf(path), 1);
-              // watcher.unwatch(path);
+              watcher.unwatch(path);
             })
           ;
       });
@@ -877,14 +877,11 @@ function tryOCR(filepath)
         pdf2img.setOptions(imgOptions);
 
         pdf2img.convert(filepath, function(err, info) {
-            if (err) {
-                console.log(err);
-                return reject(e);
-            }
+            if (err) return reject(err);
 
             const img = get(info, 'message[0].path');
 
-            if (!img) return reject(false);
+            if (!img) return reject(new Error('Could not convert PDF to .bmp file for OCR (text extraction)'));
 
             const OCROptions = {
                 input   : img,
@@ -894,10 +891,9 @@ function tryOCR(filepath)
 
             ocr.recognize(OCROptions, function(err, document) {
                 if (err) {
-                    console.error(err);
                     fs.unlinkSync(img);
 
-                    return reject(false);
+                    return reject(err);
                 }
 
                 const text = get(document, 'text');
