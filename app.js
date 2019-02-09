@@ -28,6 +28,8 @@ const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
 const genHTML       = require('./lib/genPDFHTMLString');
 
+const APIRequestHeader = { 'Authorization': 'Bearer ' + cnf.get('api:jwt_token') };
+
 const discardNonStockItemProps = [
   'testDate',
   'testTime',
@@ -88,7 +90,7 @@ function getInsts()
 
           insts.stockChangesInterval = setInterval(() => {
             stockChanges.call(insts);
-          }, 60 * 1000);
+        }, cnf.get('stock_interval') || 60 * 1000);
 
           insts.stockChangesInterval.unref();
 
@@ -704,9 +706,7 @@ function findStockItems(itemNumbers)
   return rp(
     {
       uri: cnf.get('api:uri') + '/stock/findin',
-      headers: {
-        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      },
+      headers: APIRequestHeader,
       body: { itemNumbers },
       json: true
     }
@@ -718,9 +718,7 @@ function findContdocItem(stockItem)
   return rp(
     {
       uri: cnf.get('api:uri') + '/contdoc/find/' + stockItem.ITEMNO,
-      headers: {
-        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      },
+      headers: APIRequestHeader,
       json: true
     }
   ).then(resp => ({ resp, stockItem }));
@@ -732,9 +730,7 @@ function updateStockItem(body)
     {
       method: 'PUT',
       uri: cnf.get('api:uri') + '/stock',
-      headers: {
-        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      },
+      headers: APIRequestHeader,
       body,
       json: true
     }
@@ -747,9 +743,7 @@ function createContdoc(body)
     {
       method: 'POST',
       uri: cnf.get('api:uri') + '/contdoc',
-      headers: {
-        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      },
+      headers: APIRequestHeader,
       body,
       json: true
     }
@@ -761,9 +755,7 @@ function getStockStatusUpdates(date)
   return rp(
     {
       uri: cnf.get('api:uri') + '/contitem/status/' + date,
-      headers: {
-        'Authorization': 'Basic ' + new Buffer(cnf.get('api:auth:username') + ':' + cnf.get('api:auth:password')).toString('base64')
-      },
+      headers: APIRequestHeader,
       json: true
     }
   ).then(resp => resp.body);
