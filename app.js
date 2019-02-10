@@ -4,6 +4,7 @@ const bb            = require('bluebird');
 const Redis         = require('ioredis');
 const chokidar      = require('chokidar');
 const io            = require('socket.io')();
+const socketioJwt   = require('socketio-jwt');
 const rp            = require('request-promise');
 const nodemailer    = require('nodemailer');
 const reduce        = require('lodash/reduce');
@@ -262,7 +263,11 @@ function sendEmailNotificationMessage(results)
 }
 
 function setup(insts) {
-  io.on('connection', client => {
+  io
+  .on('connection', socketioJwt.authorize({
+    secret: cnf.get('jwt_secret'),
+    timeout: 15000 // 15 seconds to send the authentication message
+  })).on('authenticated', function(client) {
     insts.clients.push(client);
 
     if (cnf.get('exchange:test'))
@@ -281,7 +286,10 @@ function setup(insts) {
     client.on('disconnect', () => {
       insts.clients.splice(insts.clients.indexOf(client), 1);
     });
-  });
+  })
+  .on('unauthorized', function(msg) {
+     throw new Error(msg.data.type);
+   });
 
   return insts;
 }
