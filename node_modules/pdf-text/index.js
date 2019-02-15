@@ -1,5 +1,5 @@
 var _ = require('lodash')
-var Parser = require('pdf3json')
+var Parser = require('pdf2json')
 
 //clear the pdf logger
 require('util')._logN = function() { }
@@ -13,7 +13,7 @@ module.exports = function(path, cb) {
     var text = []
 
     //get text on a particular page
-    result.data.Pages.forEach(function(page) {
+    result.formImage.Pages.forEach(function(page) {
       var chunks = _(page.Texts).map('R').flatten().map('T').map(decodeURIComponent).value()
       text = text.concat(chunks)
     })

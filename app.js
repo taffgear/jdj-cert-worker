@@ -1,6 +1,7 @@
 const path          = require('path');
 const fs            = require('fs');
 const bb            = require('bluebird');
+const rabbot        = require('rabbot');
 const Redis         = require('ioredis');
 const chokidar      = require('chokidar');
 const io            = require('socket.io')();
@@ -13,6 +14,7 @@ const get           = require('lodash/get');
 const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
 const isEmpty       = require('lodash/isEmpty');
+const isFunction    = require('lodash/isFunction');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -61,9 +63,16 @@ const discardNonStockItemProps = [
   'test8'
 ];
 
+const CMD_EXCH  = 'jdj.commands';
+const DLX_EXCH  = 'jdj.dlx.cmds';
+const CERT_KEY  = 'cert.process';
+const QNAME     = 'certs';
+const DLX_QNAME = 'cmd_dlx_queue';
+
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-getInsts()
+createRMQConn()
+  .then(getInsts)
   .then(setup)
   .then(run)
   .catch(e => { console.log(e); process.exit(); })
@@ -83,6 +92,8 @@ function getInsts()
         clients : [],
         watchDir: cnf.get('watchdir')
     }).tap(insts => {
+        insts.handler_fn = handle_msg.bind(insts)
+
         return insts.redis.get('jdj:settings').then(result => {
           insts.settings = updateSettings(insts, (result ? JSON.parse(result) : {}));
 
@@ -98,6 +109,32 @@ function getInsts()
           return insts;
         });
     });
+}
+
+function createRMQConn()
+{
+  return rabbot.configure({
+    connection: {
+      name: cnf.get('rabbot:name'),
+      user: cnf.get('rabbot:user'),
+      pass: cnf.get('rabbot:pass'),
+      host: cnf.get('rabbot:host'),
+      port: 5672,
+      vhost: '%2f'
+    },
+    exchanges: [
+        { name: DLX_EXCH, type: 'topic', persistent: true },
+        { name: CMD_EXCH, type: 'topic', persistent: true }
+    ],
+    queues: [
+      { name: DLX_QNAME, durable : true, noAck: false },
+      { name: QNAME, subscribe: true, durable : true, deadLetter: DLX_EXCH, autoDelete: false, limit: 1, noBatch : false, noAck : false },
+    ],
+    bindings: [
+      { exchange : DLX_EXCH, target: DLX_QNAME, keys: ["cmd.#"] },
+      { exchange: CMD_EXCH, target: QNAME, keys: [CERT_KEY] }
+    ]
+  }).then(() => { console.log('connected to rabbitmq!'); return; });
 }
 
 function buildStockStatusUpdateKey(id, date)
@@ -116,7 +153,7 @@ function stockChanges()
 
               const filePath  = cnf.get('pdfDir') + record.PGROUP + '/' + record.GRPCODE + '/' + record.ITEMNO + '.pdf';
 
-              if (!fs.existsSync(filePath)) return {};
+              // if (!fs.existsSync(filePath)) return {};
 
               return this.redis.set(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#2']), true)
                 .then(result => ({ itemno: record.ITEMNO, filePath }))
@@ -263,6 +300,14 @@ function sendEmailNotificationMessage(results)
 }
 
 function setup(insts) {
+  const handle = rabbot.handle({
+      queue    : QNAME,
+      type     : '#',
+      autoNack : true,        // automatically handle exceptions thrown in this handler
+      context  : null,        // control what `this` is when invoking the handler
+      handler  : insts.handler_fn
+  });
+
   io
   .on('connection', socketioJwt.authorize({
     secret: cnf.get('jwt_secret'),
@@ -341,62 +386,8 @@ function initPDFWatcher(insts) {
   });
 
   watcher.on('ready', () => {
-      watcher.on('add', (path) => {
-          pending.push(path);
-
-          getStockItemFromPDF(path)
-            .then(findContdocItem)
-            .then(obj => {
-                if (obj.resp.body) {
-                  const m = moment(obj.resp.body.SID);
-                  if (m.isValid() && moment(m.format('YYYY-MM-DD')).isSameOrAfter(moment(obj.stockItem.lastser).format('YYYY-MM-DD')))
-                    throw new Error('PDF ' + path + ' is al verwerkt.');
-                }
-
-                if (get(insts.settings, 'fixed_date'))
-                    obj.stockItem['LASTSER#3'] = insts.settings.fixed_date;
-
-                return obj.stockItem;
-            })
-            .then(stockItem => {
-              const body = genUpdateStockItemBody(stockItem['LASTSER#3'], stockItem.SERNO, stockItem.STATUS, stockItem.ITEMNO);
-
-              return updateStockItem(body)
-                .then(resp => ({ stockItem, resp }))
-              ;
-            })
-            .then(copyPDFToFolder)
-            .then(obj => {
-              const body = genCreateContDocBody(obj.stockItem.ITEMNO, obj.filename, obj.stockItem['LASTSER#3']);
-
-              return createContdoc(body)
-                .then(resp => ({ stockItem: obj.stockItem, resp }))
-              ;
-            })
-            .then(result => {
-              const logMsg = { msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.stockItem.ITEMNO, ts: moment().format('x'), id: uuid()};
-
-              insts.redis.set(buildRedisKey(logMsg.id, "success"), JSON.stringify(logMsg));
-              notifyClients.call(insts, 'stockItem', omit(result.stockItem, ['filename', 'path']));
-              notifyClients.call(insts, 'log', logMsg);
-            })
-            .catch(e => {
-              // copy pdf to failed folder
-              return copyPDFToFailedFolder(path)
-                .then(() => {
-                  const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
-
-                  insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-                  notifyClients.call(insts, 'log', logMsg);
-                })
-                .catch(console.log)
-              ;
-            })
-            .finally(() => {
-              pending.splice(pending.indexOf(path), 1);
-              watcher.unwatch(path);
-            })
-          ;
+      watcher.on('add', path => {
+          rabbot.publish(CMD_EXCH, { routingKey: CERT_KEY, body: { path } }, [cnf.get('rabbot:name')]);
       });
   });
 
@@ -511,6 +502,71 @@ function initCSVWatcher(insts) {
   });
 
   return watcher;
+}
+
+function handle_msg(msg) {
+  const rejectable = isFunction(msg && msg.reject);
+
+  if (!msg || !msg.body)
+      return rejectable ? msg.reject() : null;
+
+  const body = msg.body;
+  const path = body.path;
+
+  getStockItemFromPDF(path)
+    .then(findContdocItem)
+    .then(obj => {
+        if (obj.resp.body) {
+          const m = moment(obj.resp.body.SID);
+          if (m.isValid() && moment(m.format('YYYY-MM-DD')).isSameOrAfter(moment(obj.stockItem.lastser).format('YYYY-MM-DD')))
+            throw new Error('PDF ' + path + ' is al verwerkt.');
+        }
+
+        if (get(this.settings, 'fixed_date'))
+            obj.stockItem['LASTSER#3'] = this.settings.fixed_date;
+
+        return obj.stockItem;
+    })
+    .then(stockItem => {
+      const body = genUpdateStockItemBody(stockItem['LASTSER#3'], stockItem.SERNO, stockItem.STATUS, stockItem.ITEMNO);
+
+      return updateStockItem(body)
+        .then(resp => ({ stockItem, resp }))
+      ;
+    })
+    .then(copyPDFToFolder)
+    .then(obj => {
+      const body = genCreateContDocBody(obj.stockItem.ITEMNO, obj.filename, obj.stockItem['LASTSER#3']);
+
+      return createContdoc(body)
+        .then(resp => ({ stockItem: obj.stockItem, resp }))
+      ;
+    })
+    .then(result => {
+      const logMsg = { msg: "Certificaat " + path.split('/').pop() + " succesvol gekoppeld aan artikel " + result.stockItem.ITEMNO, ts: moment().format('x'), id: uuid()};
+
+      this.redis.set(buildRedisKey(logMsg.id, "success"), JSON.stringify(logMsg));
+      notifyClients.call(this, 'stockItem', omit(result.stockItem, ['filename', 'path']));
+      notifyClients.call(this, 'log', logMsg);
+      msg.ack();
+    })
+    .catch(e => {
+      // copy pdf to failed folder
+      return copyPDFToFailedFolder(path)
+        .then(() => {
+          const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+
+          this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+          notifyClients.call(this, 'log', logMsg);
+          msg.reject();
+        })
+        .catch(console.log)
+      ;
+    })
+    .finally(() => {
+      this.pdfWatcher.unwatch(path);
+    })
+  ;
 }
 
 function genPDF(obj)
@@ -771,24 +827,25 @@ function getStockStatusUpdates(date)
 
 function getStockItemFromPDF(filepath) {
   return new bb((resolve, reject) => {
-    pdfText(filepath, (err, chunks) => {
-      if (!chunks)
-        return reject(new Error('Could not read contents of file: ' + filepath));
 
-      return findStockItem(chunks, filepath, true)
-        .then(result => {
-            const stockItem = result.stockItem;
-            const OCR       = result.OCR;
-            chunks          = result.chunks;
+  pdfText(filepath, (err, chunks) => {
+    if (!chunks)
+      return reject(new Error('Could not read contents of file: ' + filepath));
 
-            stockItem.SERNO         = extractSerialNumber(chunks, OCR);
-            stockItem['LASTSER#3']  = extractDate(chunks, OCR);
-            stockItem.path          = filepath;
+    return findStockItem(chunks, filepath, true)
+      .then(result => {
+          const stockItem = result.stockItem;
+          const OCR       = result.OCR;
+          chunks          = result.chunks;
 
-            resolve(stockItem)
-      })
-      .catch(e => { console.log(e); return reject(e); } );
-    });
+          stockItem.SERNO         = extractSerialNumber(chunks, OCR);
+          stockItem['LASTSER#3']  = extractDate(chunks, OCR);
+          stockItem.path          = filepath;
+
+          resolve(stockItem)
+    })
+    .catch(e => { console.log(e); return reject(e); } );
+  });
   });
 }
 
