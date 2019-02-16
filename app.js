@@ -63,13 +63,31 @@ const discardNonStockItemProps = [
   'test8'
 ];
 
-const CMD_EXCH  = 'jdj.commands';
-const DLX_EXCH  = 'jdj.dlx.cmds';
-const CERT_KEY  = 'cert.process';
-const QNAME     = 'certs';
-const DLX_QNAME = 'cmd_dlx_queue';
+const CMD_EXCH      = 'jdj.commands';
+const DLX_EXCH      = 'jdj.dlx.cmds';
+const PDF_BIND_KEY  = 'pdf.process';
+const CSV_BIND_KEY  = 'csv.process';
+const PDF_QNAME     = 'pdf_certs';
+const CSV_QNAME     = 'csv_certs';
+const DLX_QNAME     = 'cmd_dlx_queue';
+const AMQ_INSTANCE  = cnf.get('rabbot:name');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+const DEFAULT_WATCHER_SETTINGS = {
+  persistent: true,
+  ignoreInitial: true,
+  followSymlinks: false,
+  alwaysStat: false,
+  depth: 0,
+  ignorePermissionErrors: false,
+  atomic: true,
+  usePolling: true,
+  awaitWriteFinish: {
+      stabilityThreshold: 2000,
+      pollInterval: 100
+  }
+}
 
 createRMQConn()
   .then(getInsts)
@@ -92,13 +110,14 @@ function getInsts()
         clients : [],
         watchDir: cnf.get('watchdir')
     }).tap(insts => {
-        insts.handler_fn = handle_msg.bind(insts)
+        insts.pdf_handler_fn = handle_pdf_msg.bind(insts);
+        insts.csv_handler_fn = handle_csv_msg.bind(insts);
 
         return insts.redis.get('jdj:settings').then(result => {
           insts.settings = updateSettings(insts, (result ? JSON.parse(result) : {}));
 
           insts.pdfWatcher  = initPDFWatcher(insts);
-          insts.csvWacher   = initCSVWatcher(insts);
+          insts.csvWatcher  = initCSVWatcher(insts);
 
           insts.stockChangesInterval = setInterval(() => {
             stockChanges.call(insts);
@@ -115,7 +134,7 @@ function createRMQConn()
 {
   return rabbot.configure({
     connection: {
-      name: cnf.get('rabbot:name'),
+      name: AMQ_INSTANCE,
       user: cnf.get('rabbot:user'),
       pass: cnf.get('rabbot:pass'),
       host: cnf.get('rabbot:host'),
@@ -128,11 +147,13 @@ function createRMQConn()
     ],
     queues: [
       { name: DLX_QNAME, durable : true, noAck: false },
-      { name: QNAME, subscribe: true, durable : true, deadLetter: DLX_EXCH, autoDelete: false, limit: 1, noBatch : false, noAck : false },
+      { name: PDF_QNAME, subscribe: true, durable : true, deadLetter: DLX_EXCH, autoDelete: false, limit: 1, noBatch : false, noAck : false },
+      { name: CSV_QNAME, subscribe: true, durable : true, deadLetter: DLX_EXCH, autoDelete: false, limit: 1, noBatch : false, noAck : false },
     ],
     bindings: [
       { exchange : DLX_EXCH, target: DLX_QNAME, keys: ["cmd.#"] },
-      { exchange: CMD_EXCH, target: QNAME, keys: [CERT_KEY] }
+      { exchange: CMD_EXCH, target: PDF_QNAME, keys: [PDF_BIND_KEY] },
+      { exchange: CMD_EXCH, target: CSV_QNAME, keys: [CSV_BIND_KEY] }
     ]
   }).then(() => { console.log('connected to rabbitmq!'); return; });
 }
@@ -153,7 +174,7 @@ function stockChanges()
 
               const filePath  = cnf.get('pdfDir') + record.PGROUP + '/' + record.GRPCODE + '/' + record.ITEMNO + '.pdf';
 
-              // if (!fs.existsSync(filePath)) return {};
+              if (!fs.existsSync(filePath)) return {};
 
               return this.redis.set(buildStockStatusUpdateKey(record.ITEMNO, record['DOCDATE#2']), true)
                 .then(result => ({ itemno: record.ITEMNO, filePath }))
@@ -278,10 +299,10 @@ function updateSettings(insts, settings) {
 
     if (insts.pdfWatcher) {
       insts.pdfWatcher.close();
-      insts.csvWacher.close();
+      insts.csvWatcher.close();
 
       insts.pdfWatcher  = initPDFWatcher(insts);
-      insts.csvWacher   = initCSVWatcher(insts);
+      insts.csvWatcher  = initCSVWatcher(insts);
     }
   }
 
@@ -300,13 +321,8 @@ function sendEmailNotificationMessage(results)
 }
 
 function setup(insts) {
-  const handle = rabbot.handle({
-      queue    : QNAME,
-      type     : '#',
-      autoNack : true,        // automatically handle exceptions thrown in this handler
-      context  : null,        // control what `this` is when invoking the handler
-      handler  : insts.handler_fn
-  });
+  rabbot.handle({ queue: PDF_QNAME, type: '#', autoNack: true, context: null, handler: insts.pdf_handler_fn });
+  rabbot.handle({ queue: CSV_QNAME, type: '#', autoNack: true, context: null, handler: insts.csv_handler_fn });
 
   io
   .on('connection', socketioJwt.authorize({
@@ -352,159 +368,101 @@ function buildRedisKey(id, category) {
 }
 
 function notifyClients(type, msg) {
-  this.clients.forEach(client => {
-    client.emit(type, msg);
-  });
+  this.clients.forEach(client => client.emit(type, msg));
 }
 
 function initPDFWatcher(insts) {
-  const watcher = chokidar.watch(insts.watchDir + '.', {
-      persistent: true,
-      ignored: function (path, stat) {
-          if (!stat) return false;
+  const watcher = chokidar.watch(
+    insts.watchDir + '.',
+    Object.assign(DEFAULT_WATCHER_SETTINGS,
+      {
+        ignored: (path, stat) => {
+            if (!stat) return false;
 
-          if (path[path.length - 1] === '/')  // don't ignore dirs
-              return true;
+            if (path[path.length - 1] === '/')  // don't ignore dirs
+                return true;
 
-          return /.*[^.pdf,PDF]$/.test(path);
-      },
-      ignoreInitial: true,
-      followSymlinks: false,
-      alwaysStat: false,
-      depth: 0,
-      ignorePermissionErrors: false,
-      atomic: true,
-      usePolling: true,
-      awaitWriteFinish: {
-          stabilityThreshold: 2000,
-          pollInterval: 100
+            return /.*[^.pdf,PDF]$/.test(path);
+        }
       }
-  });
+    )
+  );
 
-  watcher.on('error', (e) => {
-      console.log('Watcher Error: ' + e.message); // what to do?
-  });
-
-  watcher.on('ready', () => {
-      watcher.on('add', path => {
-          rabbot.publish(CMD_EXCH, { routingKey: CERT_KEY, body: { path } }, [cnf.get('rabbot:name')]);
-      });
-  });
+  watcher.on('error', e  => { console.log('Watcher Error: ' + e.message); });
+  watcher.on('ready', () => watcher.on('add', path => rabbot.publish(CMD_EXCH, { routingKey: PDF_BIND_KEY, body: { path } }, [AMQ_INSTANCE])));
 
   return watcher;
 }
 
 function initCSVWatcher(insts) {
-  const watcher = chokidar.watch(insts.watchDir + '.', {
-      persistent: true,
-      ignored: function (path, stat) {
-          if (!stat) return false;
+  const watcher = chokidar.watch(
+    insts.watchDir + '.',
+    Object.assign(DEFAULT_WATCHER_SETTINGS,
+      {
+        ignored: (path, stat) => {
+            if (!stat) return false;
 
-          if (path[path.length - 1] === '/')  // don't ignore dirs
-              return true;
+            if (path[path.length - 1] === '/')  // don't ignore dirs
+                return true;
 
-          return /.*[^.csv,CSV]$/.test(path);
-      },
-      ignoreInitial: true,
-      followSymlinks: false,
-      alwaysStat: false,
-      depth: 0,
-      ignorePermissionErrors: false,
-      atomic: true,
-      usePolling: true,
-      awaitWriteFinish: {
-          stabilityThreshold: 2000,
-          pollInterval: 100
+            return /.*[^.csv,CSV]$/.test(path);
+        }
       }
-  });
+    )
+  );
 
-  watcher.on('error', (e) => {
-      console.log('Watcher Error: ' + e.message); // what to do?
-  });
-
-  watcher.on('ready', () => {
-      watcher.on('add', (file) => {
-          const filename = path.parse(file).base;
-          pending.push(file);
-
-          getJSONFromCSV(file)
-          .then(data => prepCSVObjects.call(insts, data))
-          .then(data => {
-            return findStockItems(uniq(data.map(o => o.articleNumber)))
-              .then(results => {
-                  if (!results.length) {
-                    return bb.map(data, obj => genPDF(obj).catch(console.log))
-                      .then(() => {
-                        const logMsg = { msg: 'Bestandsnaam ' + filename + ' heeft geen overeenkomst in de database.', ts: moment().format('x'), id: uuid() };
-                        notifyClients.call(insts, 'log', logMsg);
-
-                        return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-                      })
-                    ;
-                  }
-
-                  return results;
-              })
-              .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
-              .then(mapped => {
-                  return bb.map(mapped, obj => {
-                      if (!obj.match) {
-                        return genPDF(obj)
-                          .then(() => {
-                            const logMsg = { msg: 'Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.', ts: moment().format('x'), id: uuid() };
-                            notifyClients.call(insts, 'log', logMsg);
-
-                            return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-                          })
-                        ;
-                      }
-
-                      const serno = (obj.articleSerialnumber.length ? obj.articleSerialnumber : obj['SERNO']);
-                      const body  = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
-
-                      return updateStockItem(body)
-                        .then(resp => genPDF(obj))
-                        .then(paths => {
-                          const contDocBody = genCreateContDocBody(obj.ITEMNO, paths.winFileName, obj.testDate);
-
-                          return createContdoc(contDocBody).then(resp => paths.winFileName);
-                        })
-                        .then(filePath => {
-
-                          const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x'), id: uuid()};
-
-                          obj['LASTSER#3'] = obj.testDate;
-
-                          notifyClients.call(insts, 'stockItem', omit(obj, discardNonStockItemProps));
-                          notifyClients.call(insts, 'log', logMsg);
-
-                          return insts.redis.set(buildRedisKey(logMsg.id, "success"), JSON.stringify(logMsg));
-                        })
-                        .catch(e => {
-                          const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
-                          notifyClients.call(insts, 'log', logMsg);
-
-                          return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-                        })
-                      ;
-                  }, { concurrency : 1 }).then(results => {
-                      // watcher.unwatch(path);
-                  });
-              })
-              .catch(e => {
-                const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
-                notifyClients.call(insts, 'log', logMsg);
-
-                return insts.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
-              })
-          });
-      });
-  });
+  watcher.on('error', e   => { console.log('Watcher Error: ' + e.message); });
+  watcher.on('ready', ()  => watcher.on('add', file => on_csv_parsed.call(insts, file)));
 
   return watcher;
 }
 
-function handle_msg(msg) {
+function on_csv_parsed(file)
+{
+  const filename = path.parse(file).base;
+
+  return getJSONFromCSV(file)
+  .then(data => prepCSVObjects.call(this, data))
+  .then(data => {
+    return findStockItems(uniq(data.map(o => o.articleNumber)))
+      .then(results => {
+          if (!results.length) {
+            return bb.map(data, obj => rabbot.publish(CMD_EXCH, { routingKey: CSV_BIND_KEY, body: { csv: obj, filename, path: file } }, [AMQ_INSTANCE]))
+              .then(() => {
+                const logMsg = { msg: 'Bestandsnaam ' + filename + ' heeft geen overeenkomsten in de database.', ts: moment().format('x'), id: uuid() };
+                notifyClients.call(this, 'log', logMsg);
+
+                return this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg))
+                  .then(() => { throw new Error('No matches in CSV file') })
+              })
+            ;
+          }
+
+          return results;
+      })
+      .then(stockItems => mapCSVObjectsToStockItems(data, stockItems))
+      .then(mapped => {
+          return bb.map(mapped, obj => {
+              rabbot.publish(CMD_EXCH, { routingKey: CSV_BIND_KEY, body: { csv: obj, filename, path: file } }, [AMQ_INSTANCE]);
+              return obj;
+          }, { concurrency : 2 });
+      })
+      .catch(e => {
+        if (e.message === 'No matches in CSV file') return;
+
+        const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+        notifyClients.call(this, 'log', logMsg);
+
+        return this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
+      })
+      .finally(() => {
+        this.csvWatcher.unwatch(file);
+      })
+  });
+}
+
+function handle_pdf_msg(msg)
+{
   const rejectable = isFunction(msg && msg.reject);
 
   if (!msg || !msg.body)
@@ -558,13 +516,66 @@ function handle_msg(msg) {
 
           this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg));
           notifyClients.call(this, 'log', logMsg);
-          msg.reject();
+
+          if (rejectable) msg.reject(); else return;
         })
         .catch(console.log)
       ;
     })
     .finally(() => {
       this.pdfWatcher.unwatch(path);
+    })
+  ;
+}
+
+function handle_csv_msg(msg)
+{
+  const rejectable = isFunction(msg && msg.reject);
+
+  if (!msg || !msg.body)
+      return rejectable ? msg.reject() : null;
+
+  const obj = msg.body.csv;
+
+  if (!obj.match) {
+    return genPDF(obj)
+      .then(() => {
+        const logMsg = { msg: 'Artikel ' + obj.articleNumber + ' heeft geen overeenkomst in de database.', ts: moment().format('x'), id: uuid() };
+        notifyClients.call(this, 'log', logMsg);
+
+        return this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg))
+          .then(() => rejectable ? msg.reject() : null)
+      })
+    ;
+  }
+
+  const serno = (obj.articleSerialnumber.length ? obj.articleSerialnumber : obj['SERNO']);
+  const body  = genUpdateStockItemBody(obj.testDate, serno, obj.STATUS, obj.ITEMNO);
+
+  return updateStockItem(body)
+    .then(resp => genPDF(obj))
+    .then(paths => {
+      const contDocBody = genCreateContDocBody(obj.ITEMNO, paths.winFileName, obj.testDate);
+
+      return createContdoc(contDocBody).then(resp => paths.winFileName);
+    })
+    .then(filePath => {
+      const logMsg = { msg: "Certificaat " + filePath.split('/').pop() + " succesvol gekoppeld aan artikel " + obj.ITEMNO, ts: moment().format('x'), id: uuid()};
+
+      obj['LASTSER#3'] = obj.testDate;
+
+      notifyClients.call(this, 'stockItem', omit(obj, discardNonStockItemProps));
+      notifyClients.call(this, 'log', logMsg);
+
+      return this.redis.set(buildRedisKey(logMsg.id, "success"), JSON.stringify(logMsg))
+        .then(() => msg.ack())
+    })
+    .catch(e => {
+      const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+      notifyClients.call(this, 'log', logMsg);
+
+      return this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg))
+        .then(() => rejectable ? msg.reject() : null)
     })
   ;
 }
