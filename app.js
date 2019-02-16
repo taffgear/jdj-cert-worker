@@ -546,6 +546,13 @@ function handle_csv_msg(msg)
         return this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg))
           .then(() => rejectable ? msg.reject() : null)
       })
+      .catch(e => {
+        const logMsg = { msg: e.message, ts: moment().format('x'), id: uuid() };
+        notifyClients.call(this, 'log', logMsg);
+
+        return this.redis.set(buildRedisKey(logMsg.id, "failed"), JSON.stringify(logMsg))
+          .then(() => rejectable ? msg.reject() : null)
+      })
     ;
   }
 
@@ -617,7 +624,7 @@ function genPDF(obj)
 
     const html = genHTML(prepped);
 
-    fsPath.mkdir(filePath, err => {
+    return fsPath.mkdir(filePath, err => {
       if (err) return reject(err);
 
       xvfb.startSync();
