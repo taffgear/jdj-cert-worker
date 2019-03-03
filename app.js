@@ -15,6 +15,8 @@ const omit          = require('lodash/omit');
 const uniq          = require('lodash/uniq');
 const isEmpty       = require('lodash/isEmpty');
 const isFunction    = require('lodash/isFunction');
+const size          = require('lodash/size');
+const each          = require('lodash/each');
 const pdfText       = require('pdf-text');
 const moment        = require('moment');
 const nconf         = require('nconf');
@@ -24,8 +26,9 @@ const wkhtmltopdf   = require('wkhtmltopdf');
 const uuid          = require('uuid/v4');
 const Xvfb          = require('xvfb');
 const xvfb          = new Xvfb();
-const ocr           = require('ocr');
+const recognize     = require('tesseractocr'); // sudo apt install tesseract-ocr
 const pdf2img       = require('pdf2img');
+const PDF2Pic       = require('pdf2pic');
 
 const pending       = [];
 const cnf           = nconf.argv().env().file({ file: path.resolve(__dirname + '/config.json') });
@@ -938,51 +941,33 @@ function findStockItem(chunks, filepath, advanced)
 function tryOCR(filepath)
 {
     const filename  = path.parse(filepath).base;
-
-    const imgOptions = {
-        type        : 'bmp',
-        size        : 1024,
-        density     : 600,
-        outputdir   : '/tmp',
-        outputname  : moment().unix() + '_pdf_img',
-        page        : 0
-    };
+    const converter = new PDF2Pic({
+      density: 1200,                              // output pixels per inch
+      savename: moment().unix() + '_pdf_img',     // output file name
+      savedir: "/tmp",                            // output file location
+      format: "png",                              // output file format
+      size: 1600                                  // output size in pixels
+    });
 
     return new bb((resolve, reject) => {
-        pdf2img.setOptions(imgOptions);
-
-        pdf2img.convert(filepath, function(err, info) {
-            if (err) return reject(err);
-
-            const img = get(info, 'message[0].path');
-
-            if (!img) return reject(new Error('Could not convert PDF to .bmp file for OCR (text extraction)'));
-
-            const OCROptions = {
-                input   : img,
-                output  : '/tmp/' + filename.replace('pdf', 'txt'),
-                format  : 'text'
-            };
-
-            ocr.recognize(OCROptions, function(err, document) {
+        return converter.convert(filepath).then(result => {
+            recognize(result.path, (err, text) => {
                 if (err) {
-                    fs.unlinkSync(img);
-
+                    fs.unlinkSync(result.path);
                     return reject(err);
                 }
 
-                const text = get(document, 'text');
-
-                // cleanup
-                fs.unlinkSync(img);
-                fs.unlinkSync(OCROptions.output);
+                fs.unlinkSync(result.path);
 
                 return findStockItem(text.split("\n"), filepath, false)
                     .then(results => resolve(results))
                     .catch(e => reject(e))
                 ;
-            });
-        });
+            })
+        })
+        .catch(e => {
+          reject(e);
+        })
     });
 }
 
