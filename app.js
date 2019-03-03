@@ -27,7 +27,6 @@ const uuid          = require('uuid/v4');
 const Xvfb          = require('xvfb');
 const xvfb          = new Xvfb();
 const recognize     = require('tesseractocr'); // sudo apt install tesseract-ocr
-const pdf2img       = require('pdf2img');
 const PDF2Pic       = require('pdf2pic');
 
 const pending       = [];
